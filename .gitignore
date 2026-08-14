@@ -44,3 +44,6 @@ __pycache__/
 
 # Vite
 .vite/
+
+backend/venv/
+backend/db.sqlite3

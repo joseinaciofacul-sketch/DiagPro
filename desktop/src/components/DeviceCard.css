@@ -1,0 +1,10 @@
+.dp-device-state { padding: 30px 0; text-align: center; color: #64748b; }
+.dp-device-state-icon { margin-bottom: 12px; }
+.dp-device-state-icon.waiting { color: #475569; }
+.dp-device-state-icon.warning { color: #f59e0b; }
+.dp-device-state-icon.error { color: #ef4444; }
+.dp-device-state-title { color: #e2e8f0; font-size: 16px; font-weight: 600; margin: 0 0 6px; }
+.dp-device-state-desc { font-size: 13px; max-width: 380px; margin: 0 auto; line-height: 1.5; }
+.dp-device-state-pulse { display: flex; align-items: center; justify-content: center; gap: 6px; margin-top: 14px; font-size: 12px; color: #f59e0b; }
+.spin { animation: dp-spin 1s linear infinite; }
+@keyframes dp-spin { from { transform: rotate(0deg); } to { transform: rotate(360deg); } }

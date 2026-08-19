@@ -1,32 +1,61 @@
 const { app, BrowserWindow, ipcMain } = require('electron')
 const path = require('path')
-const { detectarDispositivo } = require('./deviceDetector')
+const { verificarEstado } = require('./deviceDetector')
+
+let mainWindow
+let ultimoEstadoJSON = null
+let estadoAtual = { status: 'waiting' }
+let verificacaoAtual = null
 
 function createWindow() {
-  const win = new BrowserWindow({
+  mainWindow = new BrowserWindow({
     width: 1280,
     height: 800,
     autoHideMenuBar: true,
     icon: path.join(__dirname, 'public/logo.png'),
     webPreferences: {
-      preload: path.join(__dirname, 'preload.js'),
+      preload: path.join(__dirname, 'desktop', 'preload.js'),
       contextIsolation: true,
       nodeIntegration: false,
     },
   })
 
-  win.loadURL('http://localhost:5173')
+  mainWindow.loadURL('http://localhost:5173')
 }
 
-ipcMain.handle('detectar-dispositivo', async () => {
-  try {
-    return await detectarDispositivo()
-  } catch (err) {
-    return { conectado: false, erro: String(err) }
-  }
-})
+async function monitorarDispositivo() {
+  if (verificacaoAtual) return verificacaoAtual
 
-app.whenReady().then(createWindow)
+  verificacaoAtual = (async () => {
+    const estadoDetectado = await verificarEstado()
+    const estado = estadoDetectado.status === 'waiting' &&
+      estadoAtual.status !== 'waiting' && estadoAtual.status !== 'disconnected' && estadoAtual.status !== 'error'
+      ? { ...estadoDetectado, status: 'disconnected' }
+      : estadoDetectado
+    const estadoJSON = JSON.stringify(estado)
+
+    estadoAtual = estado
+    if (estadoJSON !== ultimoEstadoJSON) {
+      ultimoEstadoJSON = estadoJSON
+      if (mainWindow && !mainWindow.isDestroyed()) {
+        mainWindow.webContents.send('device-status-changed', estado)
+      }
+    }
+    return estado
+  })().finally(() => {
+    verificacaoAtual = null
+  })
+
+  return verificacaoAtual
+}
+
+ipcMain.handle('get-device-status', () => monitorarDispositivo())
+
+app.whenReady().then(() => {
+  createWindow()
+  monitorarDispositivo()
+  setInterval(monitorarDispositivo, 2000)
+})
 
 app.on('window-all-closed', () => {
   if (process.platform !== 'darwin') {

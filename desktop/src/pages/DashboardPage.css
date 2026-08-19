@@ -1,0 +1,53 @@
+.dp-content-grid { display: grid; grid-template-columns: 1fr 360px; gap: 20px; }
+.dp-greeting-row { display: flex; justify-content: space-between; align-items: flex-start; margin-bottom: 20px; }
+.dp-greeting-row h1 { font-size: 24px; margin: 0 0 4px; color: #fff; }
+.dp-greeting-row p { color: #64748b; margin: 0; font-size: 14px; }
+.dp-stats-grid { display: grid; grid-template-columns: repeat(4, 1fr); gap: 16px; margin-bottom: 20px; }
+.dp-stat-card { background: #111827; border: 1px solid #1e293b; border-radius: 12px; padding: 16px; }
+.dp-stat-icon { width: 36px; height: 36px; border-radius: 8px; display: flex; align-items: center; justify-content: center; margin-bottom: 10px; }
+.dp-stat-value { font-size: 26px; font-weight: 700; color: #fff; }
+.dp-stat-label { font-size: 12px; color: #64748b; margin: 2px 0 6px; }
+.dp-stat-change { font-size: 11px; font-weight: 600; }
+.dp-stat-change.up { color: #4ade80; }
+.dp-stat-change.down { color: #f87171; }
+.dp-device-body { display: grid; grid-template-columns: 140px 1fr 200px; gap: 20px; align-items: start; }
+.dp-device-visual { width: 140px; height: 180px; background: linear-gradient(160deg, #1e3a8a, #0f172a); border-radius: 16px; display: flex; align-items: center; justify-content: center; color: #3b82f6; }
+.dp-device-info h2 { color: #fff; margin: 0 0 10px; font-size: 20px; }
+.dp-device-tags { display: flex; gap: 16px; font-size: 12px; color: #94a3b8; margin-bottom: 8px; }
+.dp-device-tags span { display: flex; align-items: center; gap: 4px; }
+.dp-start-btn { margin-top: 14px; }
+.dp-device-quickinfo { background: #0d1220; border-radius: 10px; padding: 14px; font-size: 12px; }
+.dp-quickinfo-title { font-size: 10px; color: #64748b; font-weight: 700; margin-bottom: 10px; }
+.dp-device-quickinfo div { display: flex; flex-direction: column; margin-bottom: 8px; }
+.dp-device-quickinfo span { color: #64748b; font-size: 11px; }
+.dp-device-quickinfo strong { color: #e2e8f0; font-size: 12px; }
+.dp-modules-grid { display: grid; grid-template-columns: repeat(3, 1fr); gap: 14px; }
+.dp-module-card { background: #0d1220; border: 1px solid #1e293b; border-radius: 10px; padding: 14px; }
+.dp-module-icon { color: #3b82f6; margin-bottom: 8px; }
+.dp-module-title { font-size: 14px; font-weight: 600; color: #fff; margin-bottom: 4px; }
+.dp-module-desc { font-size: 11px; color: #64748b; line-height: 1.4; margin-bottom: 8px; }
+.dp-module-status { font-size: 11px; font-weight: 600; }
+.dp-score-gauge { position: relative; display: flex; justify-content: center; }
+.dp-gauge-svg { width: 100%; }
+.dp-gauge-center { position: absolute; top: 55%; left: 50%; transform: translate(-50%, -50%); text-align: center; }
+.dp-gauge-value { font-size: 32px; font-weight: 700; color: #fff; }
+.dp-gauge-max { font-size: 12px; color: #64748b; }
+.dp-score-label { text-align: center; color: #4ade80; font-weight: 700; font-size: 15px; margin-top: 4px; }
+.dp-score-desc { text-align: center; font-size: 12px; color: #64748b; margin: 4px 0 16px; }
+.dp-linechart { width: 100%; height: 60px; }
+.dp-chart-dates { display: flex; justify-content: space-between; font-size: 10px; color: #475569; margin-top: 4px; }
+.dp-threat-item { display: flex; align-items: center; gap: 10px; padding: 10px 0; border-bottom: 1px solid #1e293b; }
+.dp-threat-item:last-of-type { border-bottom: none; }
+.dp-threat-item.level-high svg { color: #f87171; }
+.dp-threat-item.level-medium svg { color: #fbbf24; }
+.dp-threat-item.level-low svg { color: #94a3b8; }
+.dp-threat-info { flex: 1; }
+.dp-threat-name { font-size: 13px; color: #e2e8f0; font-weight: 600; }
+.dp-threat-risk { font-size: 11px; color: #64748b; }
+.dp-threat-btn { border: none; border-radius: 6px; padding: 6px 12px; font-size: 11px; font-weight: 600; cursor: pointer; }
+.dp-threat-btn.level-high { background: #7f1d1d; color: #fca5a5; }
+.dp-threat-btn.level-medium, .dp-threat-btn.level-low { background: #1e293b; color: #94a3b8; }
+.dp-view-all-btn { width: 100%; background: #0d1220; border: 1px solid #1e293b; color: #3b82f6; border-radius: 8px; padding: 10px; font-size: 12px; margin-top: 8px; cursor: pointer; }
+.dp-activity-item { display: flex; align-items: center; gap: 10px; padding: 8px 0; font-size: 12px; color: #e2e8f0; }
+.dp-activity-item svg { color: #4ade80; flex-shrink: 0; }
+.dp-activity-time { margin-left: auto; color: #64748b; font-size: 11px; }

@@ -1,10 +1,10 @@
 const { app, BrowserWindow, ipcMain } = require('electron')
 const path = require('path')
-const { verificarEstado } = require('./deviceDetector')
+const { verificarEstado, coletarDiagnostico } = require('./deviceDetector')
 
 let mainWindow
-let ultimoEstadoJSON = null
 let estadoAtual = { status: 'waiting' }
+let ultimoEstadoJSON = null
 let verificacaoAtual = null
 
 function createWindow() {
@@ -14,42 +14,53 @@ function createWindow() {
     autoHideMenuBar: true,
     icon: path.join(__dirname, 'public/logo.png'),
     webPreferences: {
-      preload: path.join(__dirname, 'desktop', 'preload.js'),
+      preload: path.join(__dirname, 'preload.js'),
       contextIsolation: true,
       nodeIntegration: false,
     },
   })
 
   mainWindow.loadURL('http://localhost:5173')
+
+  mainWindow.on('closed', () => {
+    mainWindow = null
+  })
 }
 
 async function monitorarDispositivo() {
   if (verificacaoAtual) return verificacaoAtual
 
-  verificacaoAtual = (async () => {
-    const estadoDetectado = await verificarEstado()
-    const estado = estadoDetectado.status === 'waiting' &&
-      estadoAtual.status !== 'waiting' && estadoAtual.status !== 'disconnected' && estadoAtual.status !== 'error'
-      ? { ...estadoDetectado, status: 'disconnected' }
-      : estadoDetectado
-    const estadoJSON = JSON.stringify(estado)
+  verificacaoAtual = verificarEstado()
+    .then((estado) => {
+      estadoAtual = estado
+      const estadoJSON = JSON.stringify(estado)
 
-    estadoAtual = estado
-    if (estadoJSON !== ultimoEstadoJSON) {
-      ultimoEstadoJSON = estadoJSON
-      if (mainWindow && !mainWindow.isDestroyed()) {
-        mainWindow.webContents.send('device-status-changed', estado)
+      if (estadoJSON !== ultimoEstadoJSON) {
+        ultimoEstadoJSON = estadoJSON
+        if (mainWindow && !mainWindow.isDestroyed()) {
+          mainWindow.webContents.send('device-status-changed', estado)
+        }
       }
-    }
-    return estado
-  })().finally(() => {
-    verificacaoAtual = null
-  })
+
+      return estado
+    })
+    .finally(() => {
+      verificacaoAtual = null
+    })
 
   return verificacaoAtual
 }
 
-ipcMain.handle('get-device-status', () => monitorarDispositivo())
+ipcMain.handle('get-device-status', async () => estadoAtual)
+
+ipcMain.handle('run-diagnostic', async (event, serial) => {
+  try {
+    const dados = await coletarDiagnostico(serial)
+    return { sucesso: true, dados }
+  } catch (err) {
+    return { sucesso: false, mensagem: 'Não foi possível coletar o diagnóstico. Verifique a conexão do dispositivo.' }
+  }
+})
 
 app.whenReady().then(() => {
   createWindow()

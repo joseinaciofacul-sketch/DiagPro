@@ -1,4 +1,4 @@
-import { useState, useEffect } from 'react'
+import useDeviceStatus from '../hooks/useDeviceStatus.js'
 import {
   ScanLine, ShieldAlert, CheckCircle2, FileText, Shield, Gauge, BatteryFull,
   HardDrive, Cog, Wifi
@@ -40,33 +40,7 @@ const scoreHistory = [78, 82, 85, 80, 88, 90, 92]
 const scoreDates = ['12/05', '13/05', '14/05', '15/05', '16/05', '17/05', '18/05']
 
 function DashboardPage({ username }) {
-  const [dispositivo, setDispositivo] = useState({ status: 'waiting' })
-
-  useEffect(() => {
-    if (!window.diagpro?.onDeviceStatus || !window.diagpro?.getDeviceStatus) return
-
-    const unsubscribe = window.diagpro.onDeviceStatus((estado) => setDispositivo(estado))
-    let ativo = true
-
-    window.diagpro.getDeviceStatus()
-      .then((estado) => {
-        if (ativo) setDispositivo(estado)
-      })
-      .catch(() => {
-        if (ativo) {
-          setDispositivo({
-            status: 'error',
-            codigo: 'BRIDGE_UNAVAILABLE',
-            mensagem: 'Não foi possível verificar o dispositivo.',
-          })
-        }
-      })
-
-    return () => {
-      ativo = false
-      unsubscribe()
-    }
-  }, [])
+  const dispositivo = useDeviceStatus()
 
   return (
     <div className="dp-content-grid">

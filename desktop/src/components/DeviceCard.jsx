@@ -1,38 +1,15 @@
-import { Usb, Smartphone, AlertTriangle, WifiOff, Loader2, Play, Battery } from 'lucide-react'
+import { Usb, Smartphone, AlertTriangle, WifiOff, Loader2, Play, Battery, Layers } from 'lucide-react'
 import './DeviceCard.css'
 
-function DeviceCard({ estado }) {
+function DeviceCard({ estado, onIniciarDiagnostico }) {
   const status = estado?.status || 'waiting'
 
-  if (status === 'waiting') {
+  if (status === 'waiting' || status === 'disconnected') {
     return (
       <div className="dp-device-state">
         <Usb size={32} className="dp-device-state-icon waiting" />
         <p className="dp-device-state-title">Aguardando dispositivo</p>
         <p className="dp-device-state-desc">Conecte um Android via USB com a depuração USB ativada.</p>
-      </div>
-    )
-  }
-
-  if (status === 'disconnected') {
-    return (
-      <div className="dp-device-state">
-        <WifiOff size={32} className="dp-device-state-icon warning" />
-        <p className="dp-device-state-title">Dispositivo desconectado</p>
-        <p className="dp-device-state-desc">Reconecte o aparelho via USB para continuar.</p>
-      </div>
-    )
-  }
-
-  if (status === 'multiple') {
-    return (
-      <div className="dp-device-state">
-        <Smartphone size={32} className="dp-device-state-icon warning" />
-        <p className="dp-device-state-title">Mais de um dispositivo conectado</p>
-        <p className="dp-device-state-desc">Desconecte os aparelhos extras antes de iniciar um diagnóstico.</p>
-        <div className="dp-device-state-pulse">
-          {estado.dispositivos?.map((dispositivo) => dispositivo.serial).join(', ')}
-        </div>
       </div>
     )
   }
@@ -62,6 +39,16 @@ function DeviceCard({ estado }) {
     )
   }
 
+  if (status === 'multiple') {
+    return (
+      <div className="dp-device-state">
+        <Layers size={32} className="dp-device-state-icon warning" />
+        <p className="dp-device-state-title">Múltiplos dispositivos detectados</p>
+        <p className="dp-device-state-desc">Desconecte os aparelhos extras e deixe apenas um conectado.</p>
+      </div>
+    )
+  }
+
   if (status === 'error') {
     return (
       <div className="dp-device-state">
@@ -75,9 +62,9 @@ function DeviceCard({ estado }) {
   if (status !== 'connected') {
     return (
       <div className="dp-device-state">
-        <AlertTriangle size={32} className="dp-device-state-icon error" />
-        <p className="dp-device-state-title">Estado do dispositivo não reconhecido</p>
-        <p className="dp-device-state-desc">A conexão não pode ser usada para diagnóstico.</p>
+        <Usb size={32} className="dp-device-state-icon waiting" />
+        <p className="dp-device-state-title">Aguardando dispositivo</p>
+        <p className="dp-device-state-desc">Conecte um Android via USB com a depuração USB ativada.</p>
       </div>
     )
   }
@@ -94,7 +81,7 @@ function DeviceCard({ estado }) {
         <div className="dp-device-tags">
           <span><Battery size={14} /> Bateria: {estado.bateria}%</span>
         </div>
-        <button className="dp-primary-btn dp-start-btn">
+        <button className="dp-primary-btn dp-start-btn" onClick={() => onIniciarDiagnostico && onIniciarDiagnostico()}>
           <Play size={16} /> Iniciar diagnóstico
         </button>
       </div>

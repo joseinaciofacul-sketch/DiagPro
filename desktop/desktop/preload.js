@@ -7,4 +7,5 @@ contextBridge.exposeInMainWorld('diagpro', {
     ipcRenderer.on('device-status-changed', listener)
     return () => ipcRenderer.removeListener('device-status-changed', listener)
   },
+  runDiagnostic: (serial) => ipcRenderer.invoke('run-diagnostic', serial),
 })

@@ -129,5 +129,37 @@ async function verificarEstado() {
     mensagem: 'O dispositivo retornou um estado de conexão não reconhecido.',
   }
 }
+async function coletarDiagnostico(serial) {
+  const [armazenamentoRaw, memoriaRaw, appsRaw] = await Promise.all([
+    runAdb(['-s', serial, 'shell', 'df', '/data']),
+    runAdb(['-s', serial, 'shell', 'cat', '/proc/meminfo']),
+    runAdb(['-s', serial, 'shell', 'pm', 'list', 'packages']),
+  ])
 
-module.exports = { verificarEstado }
+  const linhasArmazenamento = armazenamentoRaw.split(/\r?\n/).filter(Boolean)
+  const colsArmazenamento = linhasArmazenamento[1]?.trim().split(/\s+/) || []
+  const totalKb = parseInt(colsArmazenamento[1], 10) || 0
+  const usadoKb = parseInt(colsArmazenamento[2], 10) || 0
+  const livreKb = parseInt(colsArmazenamento[3], 10) || 0
+
+  const memTotalMatch = memoriaRaw.match(/MemTotal:\s*(\d+)/)
+  const memDisponivelMatch = memoriaRaw.match(/MemAvailable:\s*(\d+)/)
+  const memTotalKb = memTotalMatch ? parseInt(memTotalMatch[1], 10) : 0
+  const memDisponivelKb = memDisponivelMatch ? parseInt(memDisponivelMatch[1], 10) : 0
+
+  const totalApps = appsRaw.split(/\r?\n/).filter(Boolean).length
+
+  return {
+    armazenamento: {
+      totalGb: Math.round((totalKb / 1024 / 1024) * 10) / 10,
+      usadoGb: Math.round((usadoKb / 1024 / 1024) * 10) / 10,
+      livreGb: Math.round((livreKb / 1024 / 1024) * 10) / 10,
+    },
+    memoria: {
+      totalGb: Math.round((memTotalKb / 1024 / 1024) * 10) / 10,
+      disponivelGb: Math.round((memDisponivelKb / 1024 / 1024) * 10) / 10,
+    },
+    totalApps,
+  }
+}
+module.exports = { verificarEstado, coletarDiagnostico }

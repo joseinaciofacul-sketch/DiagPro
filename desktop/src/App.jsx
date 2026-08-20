@@ -3,6 +3,7 @@ import Login from './Login.jsx'
 import AppLayout from './layouts/AppLayout.jsx'
 import DashboardPage from './pages/DashboardPage.jsx'
 import PlaceholderPage from './pages/PlaceholderPage.jsx'
+import ScannerPage from './pages/ScannerPage.jsx'
 
 function App() {
   const [token, setToken] = useState(null)
@@ -25,9 +26,10 @@ function App() {
   }
 
   function renderPage() {
-    if (activePage === 'Dashboard') return <DashboardPage username={username} />
-    return <PlaceholderPage title={activePage} />
-  }
+  if (activePage === 'Dashboard') return <DashboardPage username={username} />
+  if (activePage === 'Scanner') return <ScannerPage />
+  return <PlaceholderPage title={activePage} />
+}
 
   return (
     <AppLayout username={username} onLogout={handleLogout} activePage={activePage} onNavigate={setActivePage}>

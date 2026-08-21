@@ -16,8 +16,10 @@ let verificacaoAtual = null
 
 function createWindow() {
   mainWindow = new BrowserWindow({
-    width: 1280,
-    height: 800,
+    width: 1440,
+    height: 900,
+    minWidth: 1100,
+    minHeight: 700,
     autoHideMenuBar: true,
     icon: path.join(__dirname, 'public/logo.png'),
     webPreferences: {
@@ -27,12 +29,16 @@ function createWindow() {
     },
   })
 
+  // Abre o DiagPro maximizado
+  mainWindow.maximize()
+
   mainWindow.loadURL('http://127.0.0.1:5173')
 
   mainWindow.on('closed', () => {
     mainWindow = null
   })
 }
+
 
 async function monitorarDispositivo() {
   if (verificacaoAtual) return verificacaoAtual

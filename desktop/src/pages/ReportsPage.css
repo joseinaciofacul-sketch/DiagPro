@@ -1,0 +1,52 @@
+.dp-reports-page { max-width: 1120px; color: #e2e8f0; }
+.dp-reports-header { display: flex; align-items: flex-start; justify-content: space-between; gap: 16px; margin-bottom: 20px; }
+.dp-reports-header h1 { margin: 0 0 5px; color: #fff; font-size: 26px; line-height: 1.2; }
+.dp-reports-header p { margin: 0; color: #94a3b8; font-size: 14px; }
+.dp-reports-primary-action, .dp-reports-secondary-action, .dp-reports-download-action { display: inline-flex; align-items: center; justify-content: center; gap: 7px; border-radius: 8px; cursor: pointer; font: inherit; font-size: 13px; font-weight: 700; }
+.dp-reports-primary-action { border: 0; padding: 10px 14px; background: linear-gradient(90deg, #2563eb, #3b82f6); color: #fff; }
+.dp-reports-primary-action:hover { filter: brightness(1.08); }
+.dp-reports-primary-action:disabled { cursor: wait; opacity: .65; }
+.dp-reports-secondary-action { border: 1px solid #334155; padding: 9px 12px; background: transparent; color: #cbd5e1; }
+.dp-reports-secondary-action:hover { border-color: #475569; background: #1e293b; }
+.dp-reports-service-note { display: flex; align-items: flex-start; gap: 10px; margin-bottom: 16px; border: 1px solid #713f12; border-radius: 10px; padding: 13px 15px; background: #241a0b; color: #fbbf24; }
+.dp-reports-service-note div { display: flex; flex-direction: column; gap: 2px; }
+.dp-reports-service-note strong { font-size: 13px; }
+.dp-reports-service-note span { color: #cbd5e1; font-size: 12px; line-height: 1.45; }
+.dp-reports-scan-card { display: grid; grid-template-columns: 40px minmax(0, 1fr) auto; align-items: center; gap: 12px; margin-bottom: 16px; border: 1px solid #1d4ed8; border-radius: 11px; padding: 13px 15px; background: #0f1d3a; }
+.dp-reports-scan-icon { display: grid; width: 36px; height: 36px; place-items: center; border-radius: 9px; background: #172554; color: #60a5fa; }
+.dp-reports-scan-card strong { color: #dbeafe; font-size: 13px; }
+.dp-reports-scan-fields { display: flex; flex-wrap: wrap; gap: 4px 14px; margin-top: 4px; color: #94a3b8; font-size: 11px; }
+.dp-reports-scan-fields b { color: #cbd5e1; font-weight: 600; }
+.dp-reports-filter-row { display: flex; flex-wrap: wrap; gap: 7px; margin-bottom: 16px; }
+.dp-reports-filter { border: 1px solid #263248; border-radius: 999px; padding: 7px 11px; background: #111827; color: #94a3b8; cursor: pointer; font: inherit; font-size: 12px; }
+.dp-reports-filter:hover, .dp-reports-filter-active { border-color: #2563eb; background: #172554; color: #bfdbfe; }
+.dp-reports-card { overflow: hidden; border: 1px solid #1e293b; border-radius: 12px; background: #111827; }
+.dp-reports-card-heading { padding: 17px 18px; border-bottom: 1px solid #1e293b; }
+.dp-reports-card-heading h2 { margin: 0 0 3px; color: #f8fafc; font-size: 15px; }
+.dp-reports-card-heading p { margin: 0; color: #64748b; font-size: 12px; }
+.dp-reports-list { list-style: none; padding: 0; margin: 0; }
+.dp-reports-item { display: grid; grid-template-columns: 40px minmax(0, 1fr) auto; align-items: center; gap: 12px; padding: 14px 18px; border-bottom: 1px solid #1e293b; }
+.dp-reports-item:last-child { border-bottom: 0; }
+.dp-reports-file-icon { display: grid; width: 36px; height: 36px; place-items: center; border-radius: 9px; background: #172554; color: #60a5fa; }
+.dp-reports-item-main { min-width: 0; }
+.dp-reports-item-main strong { display: block; overflow: hidden; color: #e2e8f0; font-size: 13px; text-overflow: ellipsis; white-space: nowrap; }
+.dp-reports-item-main span { display: block; overflow: hidden; margin-top: 4px; color: #64748b; font-size: 11px; text-overflow: ellipsis; white-space: nowrap; }
+.dp-reports-download-action { border: 1px solid #334155; padding: 7px 10px; background: transparent; color: #93c5fd; }
+.dp-reports-download-action:hover { border-color: #3b82f6; background: #172554; }
+.dp-reports-empty-state { display: flex; min-height: 285px; flex-direction: column; align-items: center; justify-content: center; padding: 34px 20px; color: #64748b; text-align: center; }
+.dp-reports-empty-state > svg { margin-bottom: 12px; color: #475569; }
+.dp-reports-empty-state h2 { margin: 0 0 7px; color: #cbd5e1; font-size: 16px; }
+.dp-reports-empty-state p { max-width: 480px; margin: 0; font-size: 13px; line-height: 1.5; }
+.dp-reports-empty-actions { display: flex; flex-wrap: wrap; justify-content: center; gap: 9px; margin-top: 17px; }
+.dp-reports-modal-backdrop { position: fixed; z-index: 30; inset: 0; display: flex; align-items: center; justify-content: center; padding: 20px; background: rgba(2, 6, 23, .76); }
+.dp-reports-modal { position: relative; display: flex; width: min(100%, 470px); flex-direction: column; gap: 13px; border: 1px solid #334155; border-radius: 14px; padding: 25px; background: #111827; box-shadow: 0 18px 60px rgba(0, 0, 0, .45); }
+.dp-reports-modal-close { position: absolute; top: 11px; right: 11px; display: grid; width: 30px; height: 30px; place-items: center; border: 0; border-radius: 7px; background: transparent; color: #94a3b8; cursor: pointer; }
+.dp-reports-modal-close:hover { background: #1e293b; color: #fff; }
+.dp-reports-modal h2 { margin: 0; color: #fff; font-size: 18px; }
+.dp-reports-modal > p { margin: -5px 26px 2px 0; color: #94a3b8; font-size: 12px; line-height: 1.45; }
+.dp-reports-field { display: flex; flex-direction: column; gap: 6px; color: #cbd5e1; font-size: 12px; font-weight: 600; }
+.dp-reports-field input, .dp-reports-field select { width: 100%; border: 1px solid #334155; border-radius: 8px; padding: 9px 10px; outline: 0; background: #0d1422; color: #e2e8f0; font: inherit; font-size: 13px; }
+.dp-reports-field input:focus, .dp-reports-field select:focus { border-color: #3b82f6; box-shadow: 0 0 0 3px rgba(59, 130, 246, .15); }
+.dp-reports-form-message { margin: 0 !important; color: #fca5a5 !important; font-size: 12px !important; line-height: 1.4 !important; }
+.dp-reports-modal-actions { display: flex; justify-content: flex-end; gap: 9px; margin-top: 4px; }
+@media (max-width: 760px) { .dp-reports-header { flex-direction: column; } .dp-reports-scan-card { grid-template-columns: 40px minmax(0, 1fr); } .dp-reports-scan-card .dp-reports-secondary-action { grid-column: 2; justify-self: start; } .dp-reports-item { grid-template-columns: 40px minmax(0, 1fr); } .dp-reports-download-action { grid-column: 2; justify-self: start; } }

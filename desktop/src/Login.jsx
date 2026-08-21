@@ -32,8 +32,8 @@ function Login({ onLoginSuccess }) {
         throw new Error('Usuário ou senha inválidos')
       }
 
-      const dados = await resposta.json()
-      onLoginSuccess(dados.access, username)
+            const dados = await resposta.json()
+      onLoginSuccess(dados.access, dados.refresh, username, remember)
     } catch (err) {
       setErro(err.message)
     } finally {

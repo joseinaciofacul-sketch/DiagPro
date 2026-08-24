@@ -1,4 +1,4 @@
-import { useState } from 'react'
+import { useState, useEffect } from 'react'
 import {
   AlertTriangle, AppWindow, BatteryCharging, ChevronDown, CircleCheck,
   Clock3, Cpu, DatabaseBackup, Gauge, HardDrive, HelpCircle,
@@ -41,22 +41,49 @@ const quickActions = [
   { icon: DatabaseBackup, label: 'Backup de\nDados', tone: 'cyan' },
 ]
 
-const systemSummary = [
-  { icon: Cpu, label: 'CPU', value: '45°C', tone: 'positive' },
-  { icon: MemoryStick, label: 'Memória RAM', value: '6.2 GB / 16 GB', tone: 'positive' },
-  { icon: HardDrive, label: 'Armazenamento', value: '128 GB / 256 GB', tone: 'positive' },
-  { icon: Wifi, label: 'Rede', value: 'Conectado (Wi-Fi)', tone: 'positive' },
-  { icon: Smartphone, label: 'Android', value: 'Android 14 (One UI 6.1)' },
-  { icon: Clock3, label: 'Tempo ligado', value: '2h 45m' },
-]
-
-function StorageRing() {
-  return <div className="dp-storage-ring"><strong>64%</strong></div>
+function StorageRing({ percentual }) {
+  return <div className="dp-storage-ring"><strong>{percentual != null ? `${percentual}%` : '--'}</strong></div>
 }
 
 function DashboardPage() {
   const dispositivo = useDeviceStatus()
   const [analysisType, setAnalysisType] = useState('Rápida')
+
+    const [diagnostico, setDiagnostico] = useState(null)
+
+  useEffect(() => {
+    if (dispositivo.status === 'connected' && dispositivo.serial && window.diagpro) {
+      window.diagpro.runDiagnostic(dispositivo.serial).then((resultado) => {
+        if (resultado.sucesso) setDiagnostico(resultado.dados)
+      })
+    } else {
+      setDiagnostico(null)
+    }
+  }, [dispositivo.status, dispositivo.serial])
+
+  const armazenamentoPercentual = diagnostico
+    ? Math.round((diagnostico.armazenamento.usadoGb / diagnostico.armazenamento.totalGb) * 100)
+    : null
+
+  const systemSummary = [
+    {
+      icon: MemoryStick,
+      label: 'Memória RAM',
+      value: diagnostico ? `${diagnostico.memoria.disponivelGb} GB livres de ${diagnostico.memoria.totalGb} GB` : 'Aguardando diagnóstico',
+      tone: 'positive',
+    },
+    {
+      icon: HardDrive,
+      label: 'Armazenamento',
+      value: diagnostico ? `${diagnostico.armazenamento.usadoGb} GB / ${diagnostico.armazenamento.totalGb} GB` : 'Aguardando diagnóstico',
+      tone: 'positive',
+    },
+    {
+      icon: Smartphone,
+      label: 'Android',
+      value: dispositivo.status === 'connected' ? `Android ${dispositivo.versaoAndroid}` : 'Dispositivo não conectado',
+    },
+  ]
 
   return (
     <div className="dashboard-reference">
@@ -64,8 +91,8 @@ function DashboardPage() {
         <div><h1>Dashboard</h1><p>Visão geral do dispositivo e da saúde do sistema</p></div>
         <div className="dashboard-overview">
           <div className="overview-device"><DeviceCard estado={dispositivo} /><ChevronDown size={16} className="overview-chevron" /></div>
-          <div className="overview-stat overview-battery"><BatteryCharging size={28} /><div><span>Bateria</span><strong>84% <small>Carregando</small></strong></div></div>
-          <div className="overview-stat overview-storage"><StorageRing /><div><span>Armazenamento</span><strong>128 GB <small>/ 256 GB</small></strong></div></div>
+          <div className="overview-stat overview-battery"><BatteryCharging size={28} /><div><span>Bateria</span><strong>{dispositivo.status === 'connected' ? `${dispositivo.bateria}%` : '--'}</strong></div></div>
+         <div className="overview-stat overview-storage"><StorageRing percentual={armazenamentoPercentual} /><div><span>Armazenamento</span><strong>{diagnostico ? `${diagnostico.armazenamento.usadoGb} GB` : '--'} <small>/ {diagnostico ? `${diagnostico.armazenamento.totalGb} GB` : '--'}</small></strong></div></div>
         </div>
       </header>
 

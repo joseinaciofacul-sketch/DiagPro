@@ -6,6 +6,7 @@
   --green: #43d16b;
   --yellow: #f5a719;
   --red: #f04444;
+
   width: 100%;
   min-width: 0;
   color: #e8eef7;
@@ -180,7 +181,11 @@
 
 .dashboard-grid {
   display: grid;
-  grid-template-columns: minmax(300px, 1.35fr) minmax(260px, 1fr) minmax(300px, 1.35fr);
+  grid-template-columns:
+    minmax(300px, 1.35fr)
+    minmax(260px, 1fr)
+    minmax(300px, 1.35fr);
+
   gap: 12px;
   width: 100%;
   align-items: start;
@@ -190,6 +195,7 @@
   min-width: 0;
   display: grid;
   gap: 12px;
+  align-content: start;
 }
 
 .dashboard-panel {
@@ -731,18 +737,21 @@
 
 .quick-actions {
   display: grid;
-  grid-template-columns: repeat(5, 1fr);
-  gap: 6px;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 8px;
+  flex: 1;
+  align-content: stretch;
 }
 
 .quick-action {
-  min-height: 130px;
-  padding: 10px 4px 8px;
+  min-height: 105px;
+  height: auto;
+  padding: 10px 6px;
   display: flex;
   flex-direction: column;
   align-items: center;
   justify-content: center;
-  gap: 12px;
+  gap: 10px;
   border: 1px solid #1b2a3c;
   border-radius: 7px;
   background: #142233;
@@ -764,12 +773,28 @@
   min-height: 202px;
 }
 
+.threats-panel,
+.quick-panel,
+.system-panel {
+  display: flex;
+  flex-direction: column;
+  min-height: clamp(280px, 32vh, 330px);
+}
+.threats-panel .remove-all-button {
+  margin-top: auto;
+}
+
 .system-list {
   display: grid;
-  gap: 8px;
+  gap: 0;
+  flex: 1;
+  align-content: start;
 }
 
 .system-row {
+  min-height: 54px;
+  padding: 10px 0;
+  border-bottom: 1px solid #1b2939;
   display: flex;
   align-items: center;
   justify-content: space-between;
@@ -797,7 +822,20 @@
   color: var(--green);
 }
 
+.system-row:last-child {
+  border-bottom: 0;
+}
+
 @media (max-width: 1180px) {
+  .dashboard-grid {
+    align-items: start;
+    grid-template-columns: repeat(2, minmax(300px, 1fr));
+  }
+
+  .dashboard-column {
+    align-content: start;
+  }
+
   .dashboard-heading {
     display: block;
   }
@@ -805,10 +843,6 @@
   .dashboard-overview {
     width: 100%;
     margin-top: 12px;
-  }
-
-  .dashboard-grid {
-    grid-template-columns: repeat(2, minmax(300px, 1fr));
   }
 
   .dashboard-right {
@@ -821,12 +855,15 @@
   }
 }
 
+/* MANTÉM ESSE BLOCO LOGO DEPOIS */
 @media (max-width: 760px) {
   .dashboard-reference {
     min-width: 0;
   }
 
-  .dashboard-overview, .dashboard-grid, .dashboard-right {
+  .dashboard-overview,
+  .dashboard-grid,
+  .dashboard-right {
     grid-template-columns: 1fr;
   }
 
@@ -854,3 +891,5 @@
 
   .quick-action {
     min-height: 100px;
+  }
+}

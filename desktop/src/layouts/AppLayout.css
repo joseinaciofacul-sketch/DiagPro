@@ -5,11 +5,13 @@
 .dp-sidebar {
   width: 200px;
   flex: 0 0 200px;
+  height: 100vh;
+  min-height: 0;
   background: #07101c;
   border-right: 1px solid #1a2939;
   display: flex;
   flex-direction: column;
-  padding: 14px 12px;
+  padding: 12px 10px;
   overflow-y: auto;
 }
 
@@ -34,9 +36,10 @@
 .dp-main {
   flex: 1;
   min-width: 0;
+  min-height: 0;
   display: flex;
   flex-direction: column;
-  overflow-y: auto;
+  overflow: hidden;
 }
 .dp-topbar { display: none; }
 .dp-search { display: flex; align-items: center; gap: 8px; background: #111827; border: 1px solid #1e293b; border-radius: 8px; padding: 8px 12px; width: 380px; color: #64748b; }
@@ -51,10 +54,14 @@
 .dp-user-role { font-size: 11px; color: #64748b; }
 
 .dp-content {
-  padding: 12px 14px 10px;
+  padding: 12px 14px 14px;
   flex: 1;
   width: 100%;
   min-width: 0;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  overflow-y: auto;
 }
 .dp-primary-btn { background: linear-gradient(90deg, #2563eb, #3b82f6); color: #fff; border: none; border-radius: 8px; padding: 10px 18px; font-size: 14px; font-weight: 600; cursor: pointer; display: flex; align-items: center; gap: 6px; }
 .dp-card { background: #111827; border: 1px solid #1e293b; border-radius: 12px; padding: 18px; margin-bottom: 20px; }
@@ -62,4 +69,13 @@
 .dp-card-title-row { display: flex; justify-content: space-between; align-items: center; }
 .dp-card-title-row a { font-size: 12px; color: #3b82f6; text-decoration: none; }
 
-.dp-footer { display: flex; justify-content: flex-end; gap: 24px; padding: 10px 14px; border-top: 1px solid #1a2233; font-size: 11px; color: #64748b; }
+.dp-footer {
+  flex-shrink: 0;
+  display: flex;
+  justify-content: flex-end;
+  gap: 24px;
+  padding: 8px 14px;
+  border-top: 1px solid #1a2233;
+  font-size: 11px;
+  color: #64748b;
+}

@@ -7,6 +7,7 @@ import {
 } from 'lucide-react'
 import useDeviceStatus from '../hooks/useDeviceStatus.js'
 import DeviceCard from '../components/DeviceCard.jsx'
+import AnalysisCenter from '../components/AnalysisCenter.jsx'
 import './DashboardPage.css'
 
 const healthItems = [
@@ -112,6 +113,10 @@ function DashboardPage() {
           <section className="dashboard-panel system-panel"><div className="panel-heading"><h2>Resumo do Sistema</h2></div><div className="system-list">{systemSummary.map(({ icon: Icon, label, value, tone }) => <div className="system-row" key={label}><span><Icon size={15} />{label}</span><strong className={tone}>{value}</strong></div>)}</div></section>
         </div>
       </main>
+      <AnalysisCenter
+        deviceStatus={dispositivo.status}
+        scan={null}
+      />
     </div>
   )
 }

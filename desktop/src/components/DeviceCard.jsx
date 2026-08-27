@@ -1,7 +1,7 @@
-import { Usb, Smartphone, AlertTriangle, WifiOff, Loader2, Play, Battery, Layers } from 'lucide-react'
+import { Usb, Smartphone, AlertTriangle, WifiOff, Loader2, Layers, Battery } from 'lucide-react'
 import './DeviceCard.css'
 
-function DeviceCard({ estado, onIniciarDiagnostico }) {
+function DeviceCard({ estado }) {
   const status = estado?.status || 'waiting'
 
   if (status === 'waiting' || status === 'disconnected') {
@@ -54,7 +54,7 @@ function DeviceCard({ estado, onIniciarDiagnostico }) {
       <div className="dp-device-state">
         <AlertTriangle size={32} className="dp-device-state-icon error" />
         <p className="dp-device-state-title">Erro na detecção</p>
-        <p className="dp-device-state-desc">{estado.mensagem}</p>
+        <p className="dp-device-state-desc">{estado.message}</p>
       </div>
     )
   }
@@ -69,25 +69,31 @@ function DeviceCard({ estado, onIniciarDiagnostico }) {
     )
   }
 
+  const nomeExibicao = estado.commercialModel || estado.model || 'Dispositivo Android'
+
   return (
     <div className="dp-device-body">
       <div className="dp-device-visual"><Smartphone size={64} /></div>
+
       <div className="dp-device-info">
-        <h2>{estado.fabricante} {estado.modelo}</h2>
+        <h2>{estado.manufacturer} {nomeExibicao}</h2>
+
         <div className="dp-device-tags">
-          <span><Smartphone size={14} /> Android {estado.versaoAndroid}</span>
+          <span><Smartphone size={14} /> Android {estado.androidVersion}</span>
           <span><Usb size={14} /> USB conectado</span>
         </div>
+
         <div className="dp-device-tags">
-          <span><Battery size={14} /> Bateria: {estado.bateria}%</span>
+          <span>
+            <Battery size={14} />
+            Bateria: {estado.battery?.level != null ? `${estado.battery.level}%` : '--'}
+          </span>
         </div>
-        <button className="dp-primary-btn dp-start-btn" onClick={() => onIniciarDiagnostico && onIniciarDiagnostico()}>
-          <Play size={16} /> Iniciar diagnóstico
-        </button>
       </div>
+
       <div className="dp-device-quickinfo">
         <div className="dp-quickinfo-title">INFORMAÇÕES RÁPIDAS</div>
-        <div><span>Modelo</span><strong>{estado.modelo}</strong></div>
+        <div><span>Modelo</span><strong>{estado.model}</strong></div>
         <div><span>SDK Android</span><strong>{estado.sdk}</strong></div>
         <div><span>Serial</span><strong>{estado.serial}</strong></div>
       </div>

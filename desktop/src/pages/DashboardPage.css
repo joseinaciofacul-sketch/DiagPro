@@ -258,7 +258,6 @@
   border-radius: 50%;
   display: grid;
   place-items: center;
-  background: conic-gradient(var(--blue) 0 92%, #20334c 92% 100%);
   transform: rotate(-8deg);
   box-shadow: 0 0 18px #087cf533;
 }

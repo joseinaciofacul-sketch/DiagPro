@@ -108,9 +108,9 @@ ipcMain.handle('get-removal-preview', async (_event, { serial, packageName } = {
   }
 })
 
-ipcMain.handle('uninstall-user-app', async (_event, { serial, packageName, confirmationToken } = {}) => {
+ipcMain.handle('uninstall-user-app', async (_event, { serial, packageName, confirmationToken, findingId } = {}) => {
   try {
-    return await desinstalarAppUsuario(serial, packageName, confirmationToken)
+    return await desinstalarAppUsuario(serial, packageName, confirmationToken, findingId)
   } catch (err) {
     return { ok: false, code: err.codigo || 'UNINSTALL_FAILED', message: err.message }
   }

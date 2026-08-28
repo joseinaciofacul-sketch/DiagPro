@@ -2,6 +2,9 @@ import { useState, useEffect } from 'react'
 import Login from './Login.jsx'
 import AppLayout from './layouts/AppLayout.jsx'
 import DashboardPage from './pages/DashboardPage.jsx'
+import ClientsPage from './pages/ClientsPage.jsx'
+import DevicesPage from './pages/DevicesPage.jsx'
+import ReportsPage from './pages/ReportsPage.jsx'
 import ScannerPage from './pages/ScannerPage.jsx'
 import PlaceholderPage from './pages/PlaceholderPage.jsx'
 import { salvarTokens, limparTokens, renovarSessao } from './utils/auth.js'
@@ -54,7 +57,10 @@ function App() {
 
   function renderPage() {
     if (activePage === 'Dashboard') return <DashboardPage username={username} />
-    if (activePage === 'Scanner') return <ScannerPage />
+    if (activePage === 'Scanner') return <ScannerPage accessToken={token} />
+    if (activePage === 'Dispositivos') return <DevicesPage onOpenScanner={() => setActivePage('Scanner')} />
+    if (activePage === 'Relatórios') return <ReportsPage accessToken={token} />
+    if (activePage === 'Clientes') return <ClientsPage accessToken={token} />
     return <PlaceholderPage title={activePage} />
   }
 

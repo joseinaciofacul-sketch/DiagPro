@@ -79,3 +79,11 @@
   font-size: 11px;
   color: #64748b;
 }
+.dp-nav-group { margin-bottom: 14px; }
+.dp-nav-group-title {
+  font-size: 10px;
+  font-weight: 700;
+  letter-spacing: 0.6px;
+  color: #4b5b70;
+  padding: 4px 10px 6px;
+}

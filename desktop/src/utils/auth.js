@@ -16,6 +16,10 @@ export function getRefreshToken() {
   return localStorage.getItem(REFRESH_KEY)
 }
 
+export function getAccessToken() {
+  return localStorage.getItem(ACCESS_KEY)
+}
+
 export async function renovarSessao() {
   const refresh = getRefreshToken()
   if (!refresh) return null
@@ -38,4 +42,26 @@ export async function renovarSessao() {
   } catch {
     return null
   }
+}
+
+export async function fetchAutenticado(url, options = {}, accessToken = null) {
+  const executar = (token) => fetch(url, {
+    ...options,
+    headers: {
+      ...options.headers,
+      Authorization: `Bearer ${token}`,
+    },
+  })
+
+  const tokenAtual = accessToken || getAccessToken()
+  if (!tokenAtual) throw new Error('Sessão autenticada indisponível.')
+
+  let resposta = await executar(tokenAtual)
+  if (resposta.status !== 401) return resposta
+
+  const tokenRenovado = await renovarSessao()
+  if (!tokenRenovado) return resposta
+
+  resposta = await executar(tokenRenovado)
+  return resposta
 }

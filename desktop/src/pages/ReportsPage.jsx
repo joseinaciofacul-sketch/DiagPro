@@ -1,217 +1,276 @@
-import { useMemo, useState } from 'react'
-import { Download, FileText, Info, Plus, ScanLine, X } from 'lucide-react'
+import { useCallback, useEffect, useMemo, useState } from 'react'
+import {
+  AlertTriangle, AppWindow, Battery, CalendarClock, CheckCircle2, ChevronRight,
+  Clock3, Cpu, FileSearch, FileText, HardDrive, Loader2, RefreshCw, Search,
+  Link2, ShieldCheck, Smartphone, User, X,
+} from 'lucide-react'
+import { associarClienteAoDiagnostico, listarDiagnosticos, obterDiagnostico } from '../services/diagnostics.js'
+import { listarClientes } from '../services/clients.js'
 import './ReportsPage.css'
 
-const reportFilters = [
-  { id: 'todos', label: 'Todos' },
-  { id: 'diagnostico', label: 'Diagnósticos' },
-  { id: 'seguranca', label: 'Segurança' },
-]
+const RECENT_LIMIT = 5
+const EMPTY_VALUE = '--'
 
-function getReportType(report) {
-  return String(report?.type ?? report?.tipo ?? report?.category ?? '').toLocaleLowerCase('pt-BR')
+const MODE_LABELS = { quick: 'Rápida', complete: 'Completa', custom: 'Personalizada' }
+const MODULE_LABELS = {
+  system: 'Sistema', apps: 'Aplicativos', security: 'Segurança', permissions: 'Permissões',
+  battery: 'Bateria', storage: 'Armazenamento', performance: 'Desempenho',
+}
+const STAGE_LABELS = {
+  identification: 'Identificação', system: 'Sistema', apps: 'Aplicativos', permissions: 'Permissões',
+  security: 'Segurança', battery: 'Bateria', storage: 'Armazenamento',
+  performance: 'Desempenho', consolidation: 'Consolidação',
+}
+const STAGE_STATUS = {
+  completed: 'Concluída', unavailable: 'Indisponível', running: 'Em andamento', waiting: 'Aguardando',
 }
 
-function getReportTitle(report) {
-  return report?.title || report?.titulo || report?.name || report?.nome || 'Relatório sem título'
+function hasValue(value) {
+  return value !== null && value !== undefined && value !== ''
 }
 
-function getReportDate(report) {
-  return report?.createdAt || report?.created_at || report?.dataCriacao || report?.date || ''
+function showValue(value, suffix = '') {
+  return hasValue(value) ? `${value}${suffix}` : EMPTY_VALUE
 }
 
-function getReportStatus(report) {
-  return report?.status || report?.estado || ''
+function formatDate(value) {
+  if (!value) return EMPTY_VALUE
+  const date = new Date(value)
+  return Number.isNaN(date.getTime()) ? EMPTY_VALUE : date.toLocaleString('pt-BR')
 }
 
-function getScanFields(lastScan) {
-  if (!lastScan || typeof lastScan !== 'object') return []
-
-  return [
-    { label: 'Aplicativos', value: lastScan.totalApps },
-    { label: 'Armazenamento usado', value: lastScan?.armazenamento?.usadoGb != null ? `${lastScan.armazenamento.usadoGb} GB` : null },
-    { label: 'Memória disponível', value: lastScan?.memoria?.disponivelGb != null ? `${lastScan.memoria.disponivelGb} GB` : null },
-  ].filter((field) => field.value !== null && field.value !== undefined && field.value !== '')
+function modeLabel(mode) {
+  return MODE_LABELS[mode] || showValue(mode)
 }
 
-function ReportsPage({ reports, lastScan, username, onNavigate, onGenerateReport, onOpenReport }) {
-  const [activeFilter, setActiveFilter] = useState('todos')
-  const [isModalOpen, setIsModalOpen] = useState(false)
-  const [reportName, setReportName] = useState('')
-  const [reportType, setReportType] = useState('diagnostico')
-  const [modalMessage, setModalMessage] = useState('')
-  const [isGenerating, setIsGenerating] = useState(false)
+function healthValue(diagnostic) {
+  if (diagnostic?.health_available !== true || !hasValue(diagnostic?.health_score)) return EMPTY_VALUE
+  return `${diagnostic.health_score}/100`
+}
 
-  const reportList = Array.isArray(reports) ? reports : []
-  const filteredReports = useMemo(() => reportList.filter((report) => {
-    if (activeFilter === 'todos') return true
-    return getReportType(report).includes(activeFilter)
-  }), [activeFilter, reportList])
-  const scanFields = getScanFields(lastScan)
+function warningCount(diagnostic) {
+  return Array.isArray(diagnostic?.warnings) ? diagnostic.warnings.length : EMPTY_VALUE
+}
 
-  function openModal() {
-    setModalMessage('')
-    setIsModalOpen(true)
-  }
+function appTotal(diagnostic) {
+  return hasValue(diagnostic?.apps?.total) ? diagnostic.apps.total : EMPTY_VALUE
+}
 
-  function closeModal() {
-    setIsModalOpen(false)
-    setModalMessage('')
-  }
+function normalizeList(data) {
+  if (Array.isArray(data)) return data
+  if (Array.isArray(data?.results)) return data.results
+  throw new Error('A API retornou um formato de histórico inválido.')
+}
 
-  async function handleGenerate(event) {
-    event.preventDefault()
+function ResourceField({ label, value }) {
+  return <div className="dp-report-detail-field"><span>{label}</span><strong>{value}</strong></div>
+}
 
-    if (!lastScan) {
-      setModalMessage('Ainda não há uma coleta local para compor o relatório. Execute o scanner primeiro.')
-      return
-    }
+function ReportsPage({ accessToken }) {
+  const [diagnostics, setDiagnostics] = useState([])
+  const [listState, setListState] = useState({ status: 'loading', message: '' })
+  const [view, setView] = useState('recent')
+  const [query, setQuery] = useState('')
+  const [modeFilter, setModeFilter] = useState('all')
+  const [healthFilter, setHealthFilter] = useState('all')
+  const [detail, setDetail] = useState({ status: 'closed', data: null, message: '' })
+  const [association, setAssociation] = useState({
+    status: 'idle', clients: [], selectedId: '', saving: false, message: '', feedback: '',
+  })
 
-    if (typeof onGenerateReport !== 'function') {
-      setModalMessage('A geração não está disponível sem o backend Django ou uma integração de relatórios configurada.')
-      return
-    }
-
-    setIsGenerating(true)
-    setModalMessage('')
+  const loadDiagnostics = useCallback(async () => {
+    setListState({ status: 'loading', message: '' })
     try {
-      await onGenerateReport({ title: reportName.trim(), type: reportType, scan: lastScan })
-      setReportName('')
-      closeModal()
-    } catch {
-      setModalMessage('Não foi possível solicitar o relatório. Verifique a integração do serviço.')
-    } finally {
-      setIsGenerating(false)
+      const response = await listarDiagnosticos({ accessToken })
+      const items = normalizeList(response).slice().sort((a, b) => {
+        const dateDifference = new Date(b.finalizado_em).getTime() - new Date(a.finalizado_em).getTime()
+        return Number.isNaN(dateDifference) || dateDifference === 0 ? Number(b.id) - Number(a.id) : dateDifference
+      })
+      setDiagnostics(items)
+      setListState({ status: 'ready', message: '' })
+    } catch (error) {
+      setDiagnostics([])
+      setListState({
+        status: error?.status === 401 ? 'auth-error' : 'error',
+        message: error?.status === 401
+          ? 'Sua sessão expirou. Entre novamente para consultar os relatórios.'
+          : 'Não foi possível carregar os diagnósticos salvos.',
+      })
     }
-  }
+  }, [accessToken])
 
-  function handleOpen(report) {
-    if (typeof onOpenReport === 'function') {
-      onOpenReport(report)
-      return
+  useEffect(() => { loadDiagnostics() }, [loadDiagnostics])
+
+  const healthLabels = useMemo(() => [...new Set(
+    diagnostics.map((item) => item.health_label).filter(Boolean),
+  )].sort((a, b) => a.localeCompare(b, 'pt-BR')), [diagnostics])
+
+  const filteredDiagnostics = useMemo(() => {
+    const normalizedQuery = query.trim().toLocaleLowerCase('pt-BR')
+    const base = view === 'recent' ? diagnostics.slice(0, RECENT_LIMIT) : diagnostics
+    return base.filter((item) => {
+      const searchable = [item.id, item.fabricante, item.modelo, item.serial]
+        .filter(hasValue).join(' ').toLocaleLowerCase('pt-BR')
+      return (!normalizedQuery || searchable.includes(normalizedQuery))
+        && (modeFilter === 'all' || item.modo === modeFilter)
+        && (healthFilter === 'all' || item.health_label === healthFilter)
+    })
+  }, [diagnostics, healthFilter, modeFilter, query, view])
+
+  const openDetail = useCallback(async (id) => {
+    setDetail({ status: 'loading', data: null, message: '' })
+    setAssociation({ status: 'idle', clients: [], selectedId: '', saving: false, message: '', feedback: '' })
+    try {
+      const diagnostic = await obterDiagnostico(id, { accessToken })
+      setDetail({ status: 'ready', data: diagnostic, message: '' })
+      setAssociation((current) => ({ ...current, status: 'loading', selectedId: diagnostic.cliente?.id ? String(diagnostic.cliente.id) : '' }))
+      try {
+        const clients = normalizeList(await listarClientes({ accessToken }))
+        setAssociation((current) => ({ ...current, status: 'ready', clients }))
+      } catch (error) {
+        setAssociation((current) => ({
+          ...current,
+          status: 'error',
+          message: error?.status === 401
+            ? 'Sua sessão expirou. Entre novamente para associar um cliente.'
+            : 'Não foi possível carregar os clientes disponíveis.',
+        }))
+      }
+    } catch (error) {
+      const message = error?.status === 401
+        ? 'Sua sessão expirou. Entre novamente para consultar este diagnóstico.'
+        : error?.status === 404
+          ? 'Este diagnóstico não está mais disponível.'
+          : 'Não foi possível carregar os detalhes do diagnóstico.'
+      setDetail({ status: 'error', data: null, message })
     }
-    setModalMessage('A visualização de arquivos depende de um serviço de relatórios conectado.')
-    setIsModalOpen(true)
+  }, [accessToken])
+
+  const saveAssociation = useCallback(async () => {
+    if (!detail.data || association.status !== 'ready') return
+    setAssociation((current) => ({ ...current, saving: true, message: '', feedback: '' }))
+    try {
+      const updated = await associarClienteAoDiagnostico(
+        detail.data.id,
+        association.selectedId ? Number(association.selectedId) : null,
+        { accessToken },
+      )
+      setDetail({ status: 'ready', data: updated, message: '' })
+      setDiagnostics((current) => current.map((item) => (item.id === updated.id ? { ...item, cliente: updated.cliente } : item)))
+      setAssociation((current) => ({ ...current, saving: false, feedback: 'Associação atualizada com sucesso.' }))
+    } catch (error) {
+      setAssociation((current) => ({
+        ...current,
+        saving: false,
+        message: error?.status === 401
+          ? 'Sua sessão expirou. Entre novamente para associar o cliente.'
+          : 'Não foi possível atualizar a associação. O diagnóstico continua inalterado.',
+      }))
+    }
+  }, [accessToken, association.selectedId, association.status, detail.data])
+
+  const closeDetail = () => {
+    setDetail({ status: 'closed', data: null, message: '' })
+    setAssociation({ status: 'idle', clients: [], selectedId: '', saving: false, message: '', feedback: '' })
   }
+  const hasActiveFilters = Boolean(query.trim()) || modeFilter !== 'all' || healthFilter !== 'all'
+  const selected = detail.data
 
   return (
     <section className="dp-reports-page" aria-labelledby="dp-reports-title">
-      <div className="dp-reports-header">
-        <div>
-          <h1 id="dp-reports-title">Relatórios</h1>
-          <p>{username ? `Relatórios associados à operação de ${username}.` : 'Gere e consulte documentos baseados em coletas reais.'}</p>
-        </div>
-        <button className="dp-reports-primary-action" type="button" onClick={openModal}>
-          <Plus size={17} /> Gerar relatório
+      <header className="dp-reports-header">
+        <div><h1 id="dp-reports-title">Relatórios</h1><p>Consulte diagnósticos e atendimentos realizados.</p></div>
+        <button className="dp-reports-refresh" type="button" onClick={loadDiagnostics} disabled={listState.status === 'loading'}>
+          <RefreshCw size={16} className={listState.status === 'loading' ? 'spin' : ''} /> Atualizar
         </button>
+      </header>
+
+      <div className="dp-reports-tabs" role="tablist" aria-label="Visualização dos relatórios">
+        <button role="tab" aria-selected={view === 'recent'} className={view === 'recent' ? 'active' : ''} onClick={() => setView('recent')}>Recentes</button>
+        <button role="tab" aria-selected={view === 'history'} className={view === 'history' ? 'active' : ''} onClick={() => setView('history')}>Todo o histórico</button>
       </div>
 
-      <div className="dp-reports-service-note">
-        <Info size={18} />
-        <div>
-          <strong>Serviço de relatórios indisponível.</strong>
-          <span>Sem a API Django, a aplicação não pode armazenar, assinar, exportar ou recuperar relatórios.</span>
-        </div>
-      </div>
-
-      {lastScan && (
-        <div className="dp-reports-scan-card">
-          <div className="dp-reports-scan-icon"><ScanLine size={20} /></div>
-          <div>
-            <strong>Dados da última coleta disponíveis nesta sessão</strong>
-            {scanFields.length > 0 && (
-              <div className="dp-reports-scan-fields">
-                {scanFields.map((field) => <span key={field.label}>{field.label}: <b>{field.value}</b></span>)}
-              </div>
-            )}
-          </div>
-          <button className="dp-reports-secondary-action" type="button" onClick={openModal}>Usar na geração</button>
+      {listState.status === 'ready' && diagnostics.length > 0 && (
+        <div className="dp-reports-toolbar">
+          <label className="dp-reports-search"><Search size={16} /><input value={query} onChange={(event) => setQuery(event.target.value)} placeholder="Buscar por fabricante, modelo, serial ou ID" /></label>
+          <label className="dp-reports-select"><span>Modo</span><select value={modeFilter} onChange={(event) => setModeFilter(event.target.value)}><option value="all">Todos</option><option value="quick">Rápida</option><option value="complete">Completa</option><option value="custom">Personalizada</option></select></label>
+          <label className="dp-reports-select"><span>Health Score</span><select value={healthFilter} onChange={(event) => setHealthFilter(event.target.value)}><option value="all">Todas</option>{healthLabels.map((label) => <option value={label} key={label}>{label}</option>)}</select></label>
         </div>
       )}
 
-      <div className="dp-reports-filter-row" aria-label="Filtrar relatórios">
-        {reportFilters.map((filter) => (
-          <button
-            className={`dp-reports-filter ${activeFilter === filter.id ? 'dp-reports-filter-active' : ''}`}
-            key={filter.id}
-            type="button"
-            onClick={() => setActiveFilter(filter.id)}
-          >
-            {filter.label}
-          </button>
-        ))}
-      </div>
-
       <div className="dp-reports-card">
-        <div className="dp-reports-card-heading">
-          <div>
-            <h2>Documentos disponíveis</h2>
-            <p>{filteredReports.length} documento{filteredReports.length === 1 ? '' : 's'} exibido{filteredReports.length === 1 ? '' : 's'}</p>
-          </div>
-        </div>
+        <div className="dp-reports-card-heading"><div><h2>{view === 'recent' ? 'Diagnósticos recentes' : 'Todo o histórico'}</h2>{listState.status === 'ready' && diagnostics.length > 0 && <p>{filteredDiagnostics.length} diagnóstico{filteredDiagnostics.length === 1 ? '' : 's'} exibido{filteredDiagnostics.length === 1 ? '' : 's'}</p>}</div></div>
 
-        {filteredReports.length > 0 ? (
-          <ul className="dp-reports-list">
-            {filteredReports.map((report, index) => {
-              const title = getReportTitle(report)
-              const type = getReportType(report)
-              const date = getReportDate(report)
-              const status = getReportStatus(report)
+        {listState.status === 'loading' && <div className="dp-reports-state"><Loader2 size={28} className="spin" /><strong>Carregando diagnósticos...</strong></div>}
+        {(listState.status === 'error' || listState.status === 'auth-error') && <div className="dp-reports-state error"><AlertTriangle size={30} /><strong>{listState.status === 'auth-error' ? 'Autenticação necessária' : 'Erro ao carregar relatórios'}</strong><p>{listState.message}</p><button type="button" onClick={loadDiagnostics}>Tentar novamente</button></div>}
+        {listState.status === 'ready' && diagnostics.length === 0 && <div className="dp-reports-state"><FileText size={34} /><strong>Nenhum diagnóstico salvo</strong><p>Os diagnósticos concluídos e persistidos aparecerão aqui.</p></div>}
+        {listState.status === 'ready' && diagnostics.length > 0 && filteredDiagnostics.length === 0 && <div className="dp-reports-state"><FileSearch size={34} /><strong>Nenhum diagnóstico encontrado</strong><p>{hasActiveFilters ? 'Ajuste a busca ou os filtros para consultar outros registros.' : 'Não há registros nesta visualização.'}</p></div>}
 
-              return (
-                <li className="dp-reports-item" key={report?.id || report?.uuid || `${title}-${index}`}>
-                  <div className="dp-reports-file-icon"><FileText size={20} /></div>
-                  <div className="dp-reports-item-main">
-                    <strong>{title}</strong>
-                    {(type || date || status) && <span>{[type, date, status].filter(Boolean).join(' · ')}</span>}
-                  </div>
-                  <button className="dp-reports-download-action" type="button" onClick={() => handleOpen(report)}>
-                    <Download size={16} /> Abrir
-                  </button>
-                </li>
-              )
-            })}
-          </ul>
-        ) : (
-          <div className="dp-reports-empty-state">
-            <FileText size={36} aria-hidden="true" />
-            <h2>{reportList.length ? 'Nenhum relatório corresponde ao filtro' : 'Nenhum relatório disponível'}</h2>
-            <p>
-              {reportList.length
-                ? 'Escolha outro filtro para visualizar os documentos recebidos.'
-                : 'Quando o serviço estiver integrado, os documentos gerados a partir das coletas reais aparecerão aqui.'}
-            </p>
-            <div className="dp-reports-empty-actions">
-              <button className="dp-reports-primary-action" type="button" onClick={openModal}><Plus size={16} /> Gerar relatório</button>
-              <button className="dp-reports-secondary-action" type="button" onClick={() => onNavigate?.('Scanner')}><ScanLine size={16} /> Ir para scanner</button>
-            </div>
+        {listState.status === 'ready' && filteredDiagnostics.length > 0 && (
+          <div className={`dp-reports-list ${view === 'recent' ? 'compact' : ''}`}>
+            {filteredDiagnostics.map((diagnostic) => (
+              <button className="dp-reports-item" type="button" key={diagnostic.id} onClick={() => openDetail(diagnostic.id)}>
+                <div className="dp-reports-file-icon"><FileText size={19} /></div>
+                <div className="dp-reports-item-identity"><strong>Diagnóstico #{diagnostic.id}</strong><span>{[diagnostic.fabricante, diagnostic.modelo].filter(Boolean).join(' ') || 'Não disponível'}</span><small>{showValue(diagnostic.serial)}</small></div>
+                <div className="dp-reports-item-value"><span>Data</span><strong>{formatDate(diagnostic.finalizado_em)}</strong></div>
+                <div className="dp-reports-item-value"><span>Modo</span><strong>{modeLabel(diagnostic.modo)}</strong></div>
+                <div className="dp-reports-item-value"><span>Health Score</span><strong>{healthValue(diagnostic)}</strong><small>{showValue(diagnostic.health_label)}</small></div>
+                <div className="dp-reports-item-value"><span>Apps</span><strong>{appTotal(diagnostic)}</strong></div>
+                <div className="dp-reports-item-value"><span>Warnings</span><strong>{warningCount(diagnostic)}</strong></div>
+                <ChevronRight size={18} className="dp-reports-item-chevron" />
+              </button>
+            ))}
           </div>
         )}
       </div>
 
-      {isModalOpen && (
-        <div className="dp-reports-modal-backdrop" role="presentation" onMouseDown={closeModal}>
-          <form className="dp-reports-modal" aria-labelledby="dp-reports-modal-title" aria-modal="true" role="dialog" onMouseDown={(event) => event.stopPropagation()} onSubmit={handleGenerate}>
-            <button className="dp-reports-modal-close" type="button" aria-label="Fechar" onClick={closeModal}><X size={18} /></button>
-            <h2 id="dp-reports-modal-title">Gerar relatório</h2>
-            <p>O documento será solicitado a uma integração externa; ele não é fabricado nem salvo localmente por esta tela.</p>
-            <label className="dp-reports-field">
-              <span>Título do relatório</span>
-              <input value={reportName} onChange={(event) => setReportName(event.target.value)} placeholder="Opcional" autoFocus />
-            </label>
-            <label className="dp-reports-field">
-              <span>Tipo</span>
-              <select value={reportType} onChange={(event) => setReportType(event.target.value)}>
-                <option value="diagnostico">Diagnóstico</option>
-                <option value="seguranca">Segurança</option>
-              </select>
-            </label>
-            {modalMessage && <p className="dp-reports-form-message" role="alert">{modalMessage}</p>}
-            <div className="dp-reports-modal-actions">
-              <button className="dp-reports-secondary-action" type="button" onClick={closeModal}>Cancelar</button>
-              <button className="dp-reports-primary-action" type="submit" disabled={isGenerating}>{isGenerating ? 'Solicitando...' : 'Solicitar geração'}</button>
-            </div>
-          </form>
+      {detail.status !== 'closed' && (
+        <div className="dp-report-modal-backdrop" onMouseDown={(event) => { if (event.target === event.currentTarget) closeDetail() }}>
+          <section className="dp-report-modal" role="dialog" aria-modal="true" aria-labelledby="dp-report-detail-title">
+            <header className="dp-report-modal-header">
+              <div className="dp-report-modal-icon"><FileText size={21} /></div>
+              <div><h2 id="dp-report-detail-title">{selected ? `Diagnóstico #${selected.id}` : 'Detalhes do diagnóstico'}</h2><p>{selected ? formatDate(selected.finalizado_em) : 'Consultando registro salvo...'}</p></div>
+              <button type="button" onClick={closeDetail} aria-label="Fechar detalhes"><X size={20} /></button>
+            </header>
+
+            {detail.status === 'loading' && <div className="dp-report-detail-state"><Loader2 size={28} className="spin" /> Carregando detalhes...</div>}
+            {detail.status === 'error' && <div className="dp-report-detail-state error"><AlertTriangle size={28} /><strong>Diagnóstico indisponível</strong><p>{detail.message}</p></div>}
+
+            {detail.status === 'ready' && selected && (
+              <div className="dp-report-detail-content">
+                <section className="dp-report-detail-section dp-report-client-section">
+                  <h3><User size={16} /> Cliente</h3>
+                  <div className="dp-report-client-current"><span>Cliente associado</span><strong>{selected.cliente?.nome || 'Cliente não associado'}</strong>{selected.cliente?.telefone && <small>{selected.cliente.telefone}</small>}</div>
+                  {association.status === 'loading' && <p className="dp-report-association-state"><Loader2 size={14} className="spin" /> Carregando clientes...</p>}
+                  {association.status === 'error' && <p className="dp-report-association-state error"><AlertTriangle size={14} /> {association.message}</p>}
+                  {association.status === 'ready' && association.clients.length === 0 && <p className="dp-report-association-state">Nenhum cliente cadastrado para associação.</p>}
+                  {association.status === 'ready' && association.clients.length > 0 && <div className="dp-report-association-controls"><select value={association.selectedId} onChange={(event) => setAssociation((current) => ({ ...current, selectedId: event.target.value, message: '', feedback: '' }))} disabled={association.saving}><option value="">Cliente não associado</option>{association.clients.map((client) => <option value={client.id} key={client.id}>{client.nome}</option>)}</select><button type="button" onClick={saveAssociation} disabled={association.saving}><Link2 size={14} /> {association.saving ? 'Salvando...' : 'Atualizar associação'}</button></div>}
+                  {association.message && association.status === 'ready' && <p className="dp-report-association-feedback error">{association.message}</p>}
+                  {association.feedback && <p className="dp-report-association-feedback success">{association.feedback}</p>}
+                </section>
+
+                <section className="dp-report-detail-section"><h3><Smartphone size={16} /> Identificação</h3><div className="dp-report-detail-grid"><ResourceField label="Fabricante" value={showValue(selected.fabricante)} /><ResourceField label="Modelo" value={showValue(selected.modelo)} /><ResourceField label="Serial" value={showValue(selected.serial)} /><ResourceField label="Android" value={showValue(selected.versao_android)} /><ResourceField label="SDK" value={showValue(selected.sdk)} /><ResourceField label="Security patch" value={showValue(selected.security_patch)} /></div></section>
+
+                <section className="dp-report-detail-section"><h3><CalendarClock size={16} /> Análise</h3><div className="dp-report-detail-grid"><ResourceField label="Modo" value={modeLabel(selected.modo)} /><ResourceField label="Início" value={formatDate(selected.iniciado_em)} /><ResourceField label="Conclusão" value={formatDate(selected.finalizado_em)} /><ResourceField label="Módulos" value={Array.isArray(selected.modulos) && selected.modulos.length ? selected.modulos.map((item) => MODULE_LABELS[item] || item).join(', ') : EMPTY_VALUE} /></div></section>
+
+                <section className="dp-report-detail-section"><h3><ShieldCheck size={16} /> Saúde do sistema</h3><div className="dp-report-detail-grid"><ResourceField label="Score" value={healthValue(selected)} /><ResourceField label="Classificação" value={showValue(selected.health_label)} /><ResourceField label="Explicação" value={showValue(selected.health_explanation)} /></div></section>
+
+                <section className="dp-report-detail-section"><h3><Cpu size={16} /> Recursos</h3><div className="dp-report-resource-groups">
+                  <div><h4><Battery size={14} /> Bateria</h4><ResourceField label="Nível" value={showValue(selected.bateria?.level, hasValue(selected.bateria?.level) ? '%' : '')} /><ResourceField label="Status" value={showValue(selected.bateria?.status)} /><ResourceField label="Fonte" value={showValue(selected.bateria?.source)} /></div>
+                  <div><h4><HardDrive size={14} /> Armazenamento</h4><ResourceField label="Total" value={showValue(selected.armazenamento?.totalGb, hasValue(selected.armazenamento?.totalGb) ? ' GB' : '')} /><ResourceField label="Usado" value={showValue(selected.armazenamento?.usedGb, hasValue(selected.armazenamento?.usedGb) ? ' GB' : '')} /><ResourceField label="Livre" value={showValue(selected.armazenamento?.freeGb, hasValue(selected.armazenamento?.freeGb) ? ' GB' : '')} /></div>
+                  <div><h4><Cpu size={14} /> Memória</h4><ResourceField label="Total" value={showValue(selected.memoria?.totalGb, hasValue(selected.memoria?.totalGb) ? ' GB' : '')} /><ResourceField label="Usada" value={showValue(selected.memoria?.usedGb, hasValue(selected.memoria?.usedGb) ? ' GB' : '')} /><ResourceField label="Disponível" value={showValue(selected.memoria?.availableGb, hasValue(selected.memoria?.availableGb) ? ' GB' : '')} /></div>
+                </div></section>
+
+                <section className="dp-report-detail-section"><h3><AppWindow size={16} /> Aplicativos</h3><div className="dp-report-detail-grid"><ResourceField label="Total" value={showValue(selected.apps?.total)} /><ResourceField label="Usuário" value={showValue(selected.apps?.userTotal)} /><ResourceField label="Sistema" value={showValue(selected.apps?.systemTotal)} /></div></section>
+
+                <section className="dp-report-detail-section"><h3><AlertTriangle size={16} /> Avisos</h3>{Array.isArray(selected.warnings) && selected.warnings.length > 0 ? <div className="dp-report-warning-list">{selected.warnings.map((warning, index) => <div key={`${warning?.stage || 'warning'}-${index}`}><strong>{showValue(warning?.stage)}</strong><span>{showValue(warning?.message)}</span>{warning?.code && <small>{warning.code}</small>}</div>)}</div> : <p className="dp-report-no-data">{Array.isArray(selected.warnings) ? 'Nenhum warning registrado nesta coleta.' : 'Não disponível.'}</p>}</section>
+
+                <section className="dp-report-detail-section"><h3><Clock3 size={16} /> Etapas</h3>{selected.stages && Object.keys(selected.stages).length > 0 ? <div className="dp-report-stage-list">{Object.entries(selected.stages).map(([stageId, stage]) => <div key={stageId}>{stage?.status === 'completed' ? <CheckCircle2 size={15} /> : <AlertTriangle size={15} />}<strong>{STAGE_LABELS[stageId] || stageId}</strong><span>{STAGE_STATUS[stage?.status] || showValue(stage?.status)}</span></div>)}</div> : <p className="dp-report-no-data">Nenhuma etapa registrada.</p>}</section>
+
+                <p className="dp-report-disclaimer">Este relatório apresenta somente os sinais técnicos coletados e não certifica ausência de malware.</p>
+              </div>
+            )}
+          </section>
         </div>
       )}
     </section>

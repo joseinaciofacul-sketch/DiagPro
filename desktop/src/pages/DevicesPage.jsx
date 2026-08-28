@@ -11,6 +11,7 @@ import {
   MemoryStick,
   Package,
   RefreshCw,
+  Search,
   ShieldAlert,
   Smartphone,
   Trash2,
@@ -71,12 +72,18 @@ function normaliseApp(app, index) {
     source.packageName ?? source.package ?? source.nomePacote ?? source.id,
     '',
   )
-  const name = readableValue(source.name ?? source.label ?? source.nome, packageName || 'Aplicativo sem nome')
+  const name = hasValue(source.name ?? source.label ?? source.nome)
+    ? String(source.name ?? source.label ?? source.nome)
+    : null
   const type = formatAppType(source)
-  const analysisStatus = readableValue(
-    source.analysisStatus ?? source.status ?? source.riskStatus ?? source.classification,
-    'Sem análise disponível',
-  )
+  const rawAnalysisStatus = source.statusLabel
+    ?? source.analysisStatus
+    ?? source.status
+    ?? source.riskStatus
+    ?? source.classification
+  const analysisStatus = rawAnalysisStatus === 'not_analyzed'
+    ? 'Não analisado'
+    : readableValue(rawAnalysisStatus, 'Não analisado')
 
   return {
     key: packageName || `${name}-${index}`,
@@ -101,7 +108,10 @@ function extractApps(response) {
     }
   }
 
-  const apps = response.apps ?? response.installedApps ?? response.dados
+  const payload = response.data ?? response.dados ?? response
+  const apps = Array.isArray(payload)
+    ? payload
+    : payload.items ?? payload.apps ?? payload.installedApps
   if (!Array.isArray(apps)) {
     return {
       ok: false,
@@ -110,6 +120,15 @@ function extractApps(response) {
   }
 
   return { ok: true, apps }
+}
+
+function getAppsErrorMessage(response) {
+  const code = response?.code
+  if (code === 'DEVICE_UNAUTHORIZED') return 'Autorize a depuração USB no dispositivo para listar os aplicativos.'
+  if (code === 'DEVICE_NOT_FOUND') return 'O dispositivo foi desconectado durante a consulta.'
+  if (code === 'DEVICE_NOT_READY') return 'O dispositivo não está pronto para listar aplicativos.'
+  if (code === 'ADB_NOT_FOUND') return 'O ADB não está disponível. Verifique a instalação e tente novamente.'
+  return response?.message || response?.mensagem || 'Não foi possível obter os aplicativos do dispositivo.'
 }
 
 function resolveScanData(scanResult) {
@@ -174,6 +193,9 @@ function DevicesPage({ scanResult = null, onStartDiagnostic, onOpenScanner }) {
   const [reloadToken, setReloadToken] = useState(0)
   const [feedback, setFeedback] = useState(null)
   const [removalModal, setRemovalModal] = useState(null)
+  const [detailApp, setDetailApp] = useState(null)
+  const [appSearch, setAppSearch] = useState('')
+  const [appFilter, setAppFilter] = useState('all')
   const [previewingPackage, setPreviewingPackage] = useState('')
   const [removing, setRemoving] = useState(false)
 
@@ -182,6 +204,19 @@ function DevicesPage({ scanResult = null, onStartDiagnostic, onOpenScanner }) {
   const deviceState = getDeviceState(dispositivo?.status)
   const scanData = useMemo(() => resolveScanData(scanResult), [scanResult])
   const normalisedApps = useMemo(() => apps.map(normaliseApp), [apps])
+  const filteredApps = useMemo(() => {
+    const query = appSearch.trim().toLowerCase()
+    return normalisedApps.filter((app) => {
+      const matchesPackage = !query || app.packageName.toLowerCase().includes(query)
+      const matchesType = appFilter === 'all' || app.type.kind === appFilter
+      return matchesPackage && matchesType
+    })
+  }, [appFilter, appSearch, normalisedApps])
+  const userApps = useMemo(() => filteredApps.filter((app) => app.type.kind === 'user'), [filteredApps])
+  const systemApps = useMemo(() => filteredApps.filter((app) => app.type.kind === 'system'), [filteredApps])
+  const unknownApps = useMemo(() => filteredApps.filter((app) => app.type.kind === 'unknown'), [filteredApps])
+  const userTotal = useMemo(() => normalisedApps.filter((app) => app.type.kind === 'user').length, [normalisedApps])
+  const systemTotal = useMemo(() => normalisedApps.filter((app) => app.type.kind === 'system').length, [normalisedApps])
 
   useEffect(() => {
     let active = true
@@ -215,7 +250,7 @@ function DevicesPage({ scanResult = null, onStartDiagnostic, onOpenScanner }) {
 
         if (!result.ok) {
           setApps([])
-          setAppsState({ status: 'error', message: result.message })
+          setAppsState({ status: 'error', message: getAppsErrorMessage(response) })
           return
         }
 
@@ -242,6 +277,7 @@ function DevicesPage({ scanResult = null, onStartDiagnostic, onOpenScanner }) {
   useEffect(() => {
     if (!isConnected) {
       setRemovalModal(null)
+      setDetailApp(null)
       setPreviewingPackage('')
       setRemoving(false)
     }
@@ -254,23 +290,25 @@ function DevicesPage({ scanResult = null, onStartDiagnostic, onOpenScanner }) {
   }, [isConnected])
 
   const openRemovalConfirmation = useCallback(async (app) => {
-    if (!isConnected || !serial || !app?.packageName) return
+    if (!isConnected || !serial || !app?.packageName || app.type?.kind !== 'user') {
+      setFeedback({ type: 'error', message: 'Somente aplicativos de usuário podem ser removidos.' })
+      return
+    }
 
     const api = getDiagproApi()
-    if (!api || typeof api.uninstallUserApp !== 'function') {
+    if (
+      !api
+      || typeof api.getRemovalPreview !== 'function'
+      || typeof api.uninstallUserApp !== 'function'
+    ) {
       setFeedback({
         type: 'error',
-        message: 'A remoção de aplicativos ainda não está disponível nesta versão do DiagPro.',
+        message: 'O fluxo seguro de remoção não está disponível nesta versão do DiagPro.',
       })
       return
     }
 
     setFeedback(null)
-
-    if (typeof api.getRemovalPreview !== 'function') {
-      setRemovalModal({ app, token: null, preview: null, previewUnavailable: true })
-      return
-    }
 
     setPreviewingPackage(app.packageName)
     try {
@@ -283,19 +321,24 @@ function DevicesPage({ scanResult = null, onStartDiagnostic, onOpenScanner }) {
         return
       }
 
-      if (preview.removable === false || preview.canUninstall === false) {
+      const confirmationToken = preview.confirmationToken
+      const previewType = preview.app?.type
+      if (
+        preview.removable !== true
+        || !confirmationToken
+        || (previewType && previewType !== 'user')
+      ) {
         setFeedback({
           type: 'error',
-          message: preview.message || preview.mensagem || 'Este aplicativo não pode ser removido automaticamente.',
+          message: preview.message || preview.mensagem || 'A validação segura não autorizou a remoção deste aplicativo.',
         })
         return
       }
 
       setRemovalModal({
         app,
-        token: preview.confirmationToken || preview.token || null,
+        token: confirmationToken,
         preview,
-        previewUnavailable: false,
       })
     } catch {
       setFeedback({
@@ -308,7 +351,12 @@ function DevicesPage({ scanResult = null, onStartDiagnostic, onOpenScanner }) {
   }, [isConnected, serial])
 
   const confirmRemoval = useCallback(async () => {
-    if (!removalModal || !serial) return
+    if (
+      !removalModal
+      || !serial
+      || !removalModal.token
+      || removalModal.app?.type?.kind !== 'user'
+    ) return
 
     const api = getDiagproApi()
     if (!api || typeof api.uninstallUserApp !== 'function') return
@@ -319,8 +367,8 @@ function DevicesPage({ scanResult = null, onStartDiagnostic, onOpenScanner }) {
       const args = {
         serial,
         packageName: removalModal.app.packageName,
+        confirmationToken: removalModal.token,
       }
-      if (removalModal.token) args.confirmationToken = removalModal.token
 
       const result = await api.uninstallUserApp(args)
       if (result?.ok === true) {
@@ -533,10 +581,12 @@ function DevicesPage({ scanResult = null, onStartDiagnostic, onOpenScanner }) {
 
         {!isConnected && (
           <div className="dp-devices-empty">
-            <Usb size={28} />
+            {dispositivo?.status === 'unauthorized' || dispositivo?.status === 'error'
+              ? <AlertTriangle size={28} />
+              : <Usb size={28} />}
             <div>
-              <strong>Aguardando dispositivo</strong>
-              <p>Conecte e autorize um Android via USB para carregar os aplicativos instalados.</p>
+              <strong>{deviceState.title}</strong>
+              <p>{dispositivo?.message || dispositivo?.mensagem || deviceState.detail}</p>
             </div>
           </div>
         )}
@@ -566,39 +616,112 @@ function DevicesPage({ scanResult = null, onStartDiagnostic, onOpenScanner }) {
         )}
 
         {isConnected && appsState.status === 'ready' && normalisedApps.length > 0 && (
-          <div className="dp-devices-app-list" role="list">
-            {normalisedApps.map((app) => (
-              <article className="dp-devices-app-row" key={app.key} role="listitem">
-                <div className="dp-devices-app-icon"><Package size={19} /></div>
-                <div className="dp-devices-app-name">
-                  <strong>{app.name}</strong>
-                  <span>{app.packageName || 'Nome do pacote não informado'}</span>
+          <>
+            <div className="dp-devices-app-toolbar">
+              <label className="dp-devices-app-search">
+                <Search size={16} />
+                <input
+                  value={appSearch}
+                  onChange={(event) => setAppSearch(event.target.value)}
+                  placeholder="Buscar por packageName"
+                  aria-label="Buscar aplicativo por packageName"
+                />
+              </label>
+              <div className="dp-devices-app-filters" aria-label="Filtrar aplicativos por tipo">
+                <button className={appFilter === 'all' ? 'active' : ''} onClick={() => setAppFilter('all')}>Todos {normalisedApps.length}</button>
+                <button className={appFilter === 'user' ? 'active' : ''} onClick={() => setAppFilter('user')}>Usuário {userTotal}</button>
+                <button className={appFilter === 'system' ? 'active' : ''} onClick={() => setAppFilter('system')}>Sistema {systemTotal}</button>
+              </div>
+            </div>
+
+            {filteredApps.length === 0 ? (
+              <div className="dp-devices-empty dp-devices-filter-empty">
+                <Search size={28} />
+                <div>
+                  <strong>Nenhum packageName encontrado</strong>
+                  <p>Ajuste a busca ou selecione outro tipo de aplicativo.</p>
                 </div>
-                <div className="dp-devices-app-detail">
-                  <span>Tipo</span>
-                  <strong className={`dp-devices-app-type ${app.type.kind}`}>{app.type.label}</strong>
-                </div>
-                <div className="dp-devices-app-detail dp-devices-analysis-state">
-                  <span>Análise</span>
-                  <strong>{app.analysisStatus}</strong>
-                </div>
-                {app.type.canUninstall && app.packageName ? (
-                  <button
-                    className="dp-devices-remove-btn"
-                    onClick={() => openRemovalConfirmation(app)}
-                    disabled={previewingPackage === app.packageName || removing}
-                  >
-                    {previewingPackage === app.packageName ? <Loader2 size={15} className="spin" /> : <Trash2 size={15} />}
-                    {previewingPackage === app.packageName ? 'Validando...' : 'Remover'}
-                  </button>
-                ) : (
-                  <span className="dp-devices-app-no-action">Sem remoção automática</span>
-                )}
-              </article>
-            ))}
-          </div>
+              </div>
+            ) : (
+              <div className="dp-devices-app-groups">
+                {[
+                  { key: 'user', title: 'Aplicativos do usuário', items: userApps },
+                  { key: 'system', title: 'Aplicativos do sistema', items: systemApps },
+                  { key: 'unknown', title: 'Tipo não informado', items: unknownApps },
+                ].filter((group) => group.items.length > 0).map((group) => (
+                  <section className="dp-devices-app-group" key={group.key}>
+                    <div className="dp-devices-app-group-title">
+                      <span>{group.title}</span>
+                      <strong>{group.items.length}</strong>
+                    </div>
+                    <div className="dp-devices-app-list" role="list">
+                      {group.items.map((app) => (
+                        <article className="dp-devices-app-row" key={app.key} role="listitem">
+                          <div className="dp-devices-app-icon"><Package size={19} /></div>
+                          <div className="dp-devices-app-name">
+                            {app.name && <strong>{app.name}</strong>}
+                            <span className={!app.name ? 'package-primary' : ''}>{app.packageName || 'packageName não informado'}</span>
+                          </div>
+                          <div className="dp-devices-app-detail">
+                            <span>Tipo</span>
+                            <strong className={`dp-devices-app-type ${app.type.kind}`}>{app.type.label}</strong>
+                          </div>
+                          <div className="dp-devices-app-detail dp-devices-analysis-state">
+                            <span>Análise</span>
+                            <strong>{app.analysisStatus}</strong>
+                          </div>
+                          <div className="dp-devices-app-actions">
+                            <button className="dp-devices-detail-btn" onClick={() => setDetailApp(app)}>Detalhes</button>
+                            {app.type.kind === 'user' && app.packageName ? (
+                              <button
+                                className="dp-devices-remove-btn"
+                                onClick={() => openRemovalConfirmation(app)}
+                                disabled={previewingPackage === app.packageName || removing}
+                              >
+                                {previewingPackage === app.packageName ? <Loader2 size={15} className="spin" /> : <Trash2 size={15} />}
+                                {previewingPackage === app.packageName ? 'Validando...' : 'Remover'}
+                              </button>
+                            ) : (
+                              <span className="dp-devices-app-no-action">Protegido</span>
+                            )}
+                          </div>
+                        </article>
+                      ))}
+                    </div>
+                  </section>
+                ))}
+              </div>
+            )}
+          </>
         )}
       </section>
+
+      {detailApp && (
+        <div className="dp-devices-modal-backdrop" onMouseDown={(event) => {
+          if (event.target === event.currentTarget) setDetailApp(null)
+        }}>
+          <section className="dp-devices-modal" role="dialog" aria-modal="true" aria-labelledby="app-detail-title">
+            <div className="dp-devices-modal-header">
+              <div className="dp-devices-detail-modal-icon"><Package size={21} /></div>
+              <div>
+                <h2 id="app-detail-title">Detalhes do aplicativo</h2>
+                <p>Informações retornadas pela consulta ADB.</p>
+              </div>
+              <button onClick={() => setDetailApp(null)} aria-label="Fechar detalhes"><X size={19} /></button>
+            </div>
+            <div className="dp-devices-modal-details dp-devices-basic-details">
+              <div><span>Nome</span><strong>{detailApp.name || 'Não informado pelo dispositivo'}</strong></div>
+              <div><span>packageName</span><strong>{detailApp.packageName || 'Não informado'}</strong></div>
+              <div><span>Tipo</span><strong>{detailApp.type.label}</strong></div>
+              <div><span>Análise</span><strong>{detailApp.analysisStatus}</strong></div>
+              <div><span>Remoção</span><strong>{detailApp.type.kind === 'user' ? 'Disponível com confirmação' : 'Não permitida'}</strong></div>
+            </div>
+            <div className="dp-devices-modal-actions">
+              <button className="dp-devices-secondary-btn" onClick={() => setDetailApp(null)}>Fechar</button>
+            </div>
+          </section>
+        </div>
+      )}
 
       {removalModal && (
         <div
@@ -630,12 +753,6 @@ function DevicesPage({ scanResult = null, onStartDiagnostic, onOpenScanner }) {
               {removalModal.preview?.motivo && !removalModal.preview?.reason && <div><span>Motivo</span><strong>{removalModal.preview.motivo}</strong></div>}
               {removalModal.preview?.impact && <div><span>Impacto</span><strong>{removalModal.preview.impact}</strong></div>}
             </div>
-
-            {removalModal.previewUnavailable && (
-              <p className="dp-devices-modal-note">
-                A validação prévia não está disponível. A remoção só será solicitada após sua confirmação.
-              </p>
-            )}
 
             <p className="dp-devices-modal-warning">
               O aplicativo poderá deixar de funcionar para o usuário atual do dispositivo. Componentes de sistema não são removidos por esta tela.

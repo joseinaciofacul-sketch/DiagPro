@@ -1,20 +1,34 @@
 import {
-  LayoutDashboard, ScanLine, Smartphone, Stethoscope, ShieldAlert,
-  History, FileText, Users, Settings, Search, Bell, Sun, ChevronDown,
-  Shield, HelpCircle, Building2
+  LayoutDashboard, ScanLine, Smartphone, ShieldAlert, Users, FileText,
+  BarChart3, Settings, CreditCard, Search, Bell, Sun, ChevronDown, HelpCircle
 } from 'lucide-react'
 import './AppLayout.css'
 
-const menuItems = [
-  { icon: LayoutDashboard, label: 'Dashboard' },
-  { icon: ScanLine, label: 'Scanner' },
-  { icon: Smartphone, label: 'Dispositivos' },
-  { icon: Stethoscope, label: 'Diagnósticos' },
-  { icon: ShieldAlert, label: 'Ameaças' },
-  { icon: History, label: 'Histórico' },
-  { icon: FileText, label: 'Relatórios' },
-  { icon: Users, label: 'Clientes' },
-  { icon: Settings, label: 'Configurações' },
+const menuGroups = [
+  {
+    title: 'PRINCIPAL',
+    items: [
+      { icon: LayoutDashboard, label: 'Dashboard' },
+      { icon: ScanLine, label: 'Scanner' },
+      { icon: Smartphone, label: 'Dispositivos' },
+      { icon: ShieldAlert, label: 'Ameaças' },
+    ],
+  },
+  {
+    title: 'GESTÃO',
+    items: [
+      { icon: Users, label: 'Clientes' },
+      { icon: FileText, label: 'Relatórios' },
+      { icon: BarChart3, label: 'Visão Gerencial' },
+    ],
+  },
+  {
+    title: 'SISTEMA',
+    items: [
+      { icon: Settings, label: 'Configurações' },
+      { icon: CreditCard, label: 'Plano e assinatura' },
+    ],
+  },
 ]
 
 function AppLayout({ username, onLogout, activePage, onNavigate, children }) {
@@ -30,34 +44,24 @@ function AppLayout({ username, onLogout, activePage, onNavigate, children }) {
         </div>
 
         <nav className="dp-nav">
-          {menuItems.map((item) => (
-            <div
-              key={item.label}
-              className={`dp-nav-item ${activePage === item.label ? 'active' : ''}`}
-              onClick={() => onNavigate(item.label)}
-            >
-              <item.icon size={18} />
-              <span>{item.label}</span>
+          {menuGroups.map((group) => (
+            <div className="dp-nav-group" key={group.title}>
+              <div className="dp-nav-group-title">{group.title}</div>
+              {group.items.map((item) => (
+                <div
+                  key={item.label}
+                  className={`dp-nav-item ${activePage === item.label ? 'active' : ''}`}
+                  onClick={() => onNavigate(item.label)}
+                >
+                  <item.icon size={18} />
+                  <span>{item.label}</span>
+                </div>
+              ))}
             </div>
           ))}
         </nav>
 
         <div className="dp-sidebar-bottom">
-          <div className="dp-plan-card">
-            <div className="dp-plan-head">
-              <Building2 size={16} />
-              <span>Plano Empresarial</span>
-              <span className="dp-badge-active">Ativo</span>
-            </div>
-            <p>Licença válida até 18/05/2026<br />Dispositivos ilimitados</p>
-          </div>
-          <div className="dp-plan-card">
-            <div className="dp-plan-head">
-              <Shield size={16} />
-              <span>Sistema protegido</span>
-            </div>
-            <p>Última verificação: 10:24<br />Todos os módulos atualizados</p>
-          </div>
           <button className="dp-help-link" onClick={onLogout}>
             <HelpCircle size={16} /> Sair
           </button>

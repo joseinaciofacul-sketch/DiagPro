@@ -2,10 +2,17 @@ const { execFile } = require('child_process')
 const crypto = require('crypto')
 const fs = require('fs')
 const path = require('path')
+const { analisarSeguranca } = require('./security/securityAnalyzer')
+const { planejarRemediacoes } = require('./remediation/remediationPlanner')
+const { criarExecutorRemediacao } = require('./remediation/remediationExecutor')
 
 const ADB_TIMEOUT = 6000
 const EXTENDED_ADB_TIMEOUT = 20000
+const HASH_ADB_TIMEOUT = 30000
+const HASH_BATCH_SIZE = 16
+const HASH_BATCH_CONCURRENCY = 2
 const MAX_BUFFER = 10 * 1024 * 1024
+const APP_DETAILS_CONCURRENCY = 4
 const removalTokens = new Map()
 
 function criarErro(codigo, mensagem) {
@@ -230,11 +237,70 @@ async function coletarMemoria(serial) {
   }
 }
 
+function booleanoAndroid(valor) {
+  if (valor === '1' || valor === 'true') return true
+  if (valor === '0' || valor === 'false') return false
+  return null
+}
+
+async function lerConfiguracaoAndroid(serial, namespace, chave) {
+  try {
+    const valor = (await runAdb(['-s', serial, 'shell', 'settings', 'get', namespace, chave])).trim()
+    return !valor || valor === 'null' ? null : valor
+  } catch {
+    return null
+  }
+}
+
+function parseServicosAcessibilidade(valor) {
+  if (!valor) return []
+  return valor.split(':').map((servico) => servico.trim()).filter(Boolean)
+}
+
+async function coletarServicosAcessibilidade(serial) {
+  return parseServicosAcessibilidade(
+    await lerConfiguracaoAndroid(serial, 'secure', 'enabled_accessibility_services'),
+  )
+}
+
+async function coletarEstadoRoot(serial) {
+  try {
+    const caminho = (await runAdb([
+      '-s', serial, 'shell', 'sh', '-c', '(command -v su 2>/dev/null || which su 2>/dev/null); exit 0',
+    ])).split(/\r?\n/).map((linha) => linha.trim()).find(Boolean)
+    if (caminho) {
+      return {
+        status: 'detected',
+        message: 'O shell ADB localizou um executável su acessível.',
+        evidence: { path: caminho },
+      }
+    }
+    return {
+      status: 'not_detected',
+      message: 'Nenhum executável su acessível foi localizado pelo shell ADB nesta verificação.',
+      evidence: { commandCompleted: true },
+    }
+  } catch {
+    return {
+      status: 'not_verified',
+      message: 'Não foi possível verificar a presença de um executável su acessível ao shell ADB.',
+    }
+  }
+}
+
 async function coletarSinaisSeguranca(serial) {
-  const propriedades = await lerPropriedades(serial, [
-    'ro.build.version.security_patch',
-    'ro.debuggable',
-    'ro.secure',
+  const [propriedades, packageVerifier, verifyAdbInstalls, accessibilityEnabled, enabledServices, root] = await Promise.all([
+    lerPropriedades(serial, [
+      'ro.build.version.security_patch',
+      'ro.debuggable',
+      'ro.secure',
+      'ro.build.tags',
+    ]),
+    lerConfiguracaoAndroid(serial, 'global', 'package_verifier_enable'),
+    lerConfiguracaoAndroid(serial, 'global', 'verifier_verify_adb_installs'),
+    lerConfiguracaoAndroid(serial, 'secure', 'accessibility_enabled'),
+    coletarServicosAcessibilidade(serial),
+    coletarEstadoRoot(serial),
   ])
   const depuravel = propriedades['ro.debuggable'] === '1'
     ? true
@@ -246,28 +312,200 @@ async function coletarSinaisSeguranca(serial) {
     securityPatch: propriedades['ro.build.version.security_patch'],
     debuggableBuild: depuravel,
     secureBuild: propriedades['ro.secure'] === '1' ? true : propriedades['ro.secure'] === '0' ? false : null,
-    root: {
-      status: 'not_verified',
-      message: 'Não verificado: o DiagPro não solicita acesso root durante a coleta.',
+    buildTags: propriedades['ro.build.tags'],
+    packageVerifierEnabled: booleanoAndroid(packageVerifier),
+    verifyAdbInstalls: booleanoAndroid(verifyAdbInstalls),
+    accessibility: {
+      enabled: booleanoAndroid(accessibilityEnabled),
+      enabledServices,
     },
+    root,
     findings: [],
   }
 }
 
-async function listarAppsInstalados(serial) {
+function caminhoApkValido(apkPath) {
+  return typeof apkPath === 'string'
+    && /^\/[A-Za-z0-9_./=+~:-]+\.apk$/.test(apkPath)
+}
+
+function valorCampo(saida, campo) {
+  const match = saida.match(new RegExp(`(?:^|[\\s{])${campo}=([^\\s}\\r\\n]+)`, 'mi'))
+  if (!match) return null
+  const valor = match[1].trim()
+  return !valor || valor === 'null' ? null : valor
+}
+
+function parseDetalhesPacote(saida, packageName, enabledAccessibilityServices = [], listedApkPath = null) {
+  const requestedPermissions = []
+  const grantedPermissions = []
+  const flags = new Set()
+  let lendoSolicitadas = false
+  let installed = null
+  let enabled = null
+  let firstInstallTime = null
+  let lastUpdateTime = null
+  let versionName = null
+  let versionCode = null
+  let uid = null
+  let codePath = null
+  let resourcePath = null
+
+  saida.split(/\r?\n/).forEach((linha) => {
+    const texto = linha.trim()
+    if (texto === 'requested permissions:') {
+      lendoSolicitadas = true
+      return
+    }
+    if (lendoSolicitadas) {
+      if (/^android\.permission\.[A-Za-z0-9_]+$/.test(texto)) {
+        requestedPermissions.push(texto)
+      } else if (texto && /:$/.test(texto)) {
+        lendoSolicitadas = false
+      }
+    }
+
+    const permissaoConcedida = texto.match(/^(android\.permission\.[A-Za-z0-9_]+):\s+granted=true\b/)
+    if (permissaoConcedida) grantedPermissions.push(permissaoConcedida[1])
+
+    const flagsMatch = texto.match(/^(?:pkgFlags|flags)=\[([^\]]*)\]/)
+    if (flagsMatch) flagsMatch[1].split(/\s+/).filter(Boolean).forEach((flag) => flags.add(flag))
+
+    const firstInstallMatch = texto.match(/^firstInstallTime=(.+)$/)
+    if (firstInstallMatch) firstInstallTime = firstInstallMatch[1].trim()
+    const lastUpdateMatch = texto.match(/^lastUpdateTime=(.+)$/)
+    if (lastUpdateMatch) lastUpdateTime = lastUpdateMatch[1].trim()
+    const versionNameMatch = texto.match(/^versionName=(.*)$/)
+    if (versionNameMatch) versionName = versionNameMatch[1].trim() || null
+    const versionCodeMatch = texto.match(/^versionCode=(\d+)\b/)
+    if (versionCodeMatch) versionCode = versionCodeMatch[1]
+    const uidMatch = texto.match(/^(?:userId|appId)=(\d+)\b/)
+    if (uidMatch && uid === null) uid = inteiro(uidMatch[1])
+    const codePathMatch = texto.match(/^codePath=(.+)$/)
+    if (codePathMatch) codePath = codePathMatch[1].trim()
+    const resourcePathMatch = texto.match(/^resourcePath=(.+)$/)
+    if (resourcePathMatch) resourcePath = resourcePathMatch[1].trim()
+
+    const userState = texto.match(/^User\s+0:.*\binstalled=(true|false)\b/)
+    if (userState) installed = userState[1] === 'true'
+    const enabledState = texto.match(/^User\s+0:.*\benabled=(\d+)\b/)
+    if (enabledState) enabled = !['2', '3', '4'].includes(enabledState[1])
+  })
+
+  const installerPackageName = valorCampo(saida, 'installerPackageName')
+  const initiatingPackageName = valorCampo(saida, 'initiatingPackageName')
+  const originatingPackageName = valorCampo(saida, 'originatingPackageName')
+  const signatureVersionMatch = saida.match(/signatures=PackageSignatures\{[^\r\n}]*version:(\d+)/i)
+  const apkPath = [listedApkPath, resourcePath, codePath].find(caminhoApkValido) || null
+
+  return {
+    available: true,
+    requestedPermissions: [...new Set(requestedPermissions)].sort(),
+    grantedPermissions: [...new Set(grantedPermissions)].sort(),
+    flags: [...flags].sort(),
+    installed,
+    enabled,
+    firstInstallTime,
+    lastUpdateTime,
+    versionName,
+    versionCode,
+    uid,
+    apkPath,
+    installerPackageName,
+    initiatingPackageName,
+    originatingPackageName,
+    integrity: {
+      hash: { algorithm: 'SHA-256', hash: null, status: 'not_verified', reason: 'HASH_NOT_COLLECTED' },
+      signature: {
+        status: 'not_verified',
+        certificateDigest: null,
+        digestAlgorithm: null,
+        schemeVersion: signatureVersionMatch ? inteiro(signatureVersionMatch[1]) : null,
+        reason: 'CERTIFICATE_DIGEST_UNAVAILABLE_VIA_ADB',
+      },
+    },
+    accessibilityServiceEnabled: enabledAccessibilityServices.some((service) => service.startsWith(`${packageName}/`)),
+  }
+}
+
+async function coletarHashesApks(serial, detalhesPorPacote) {
+  const candidatos = [...detalhesPorPacote.values()].filter((details) => details?.available && caminhoApkValido(details.apkPath))
+  const lotes = []
+  for (let indice = 0; indice < candidatos.length; indice += HASH_BATCH_SIZE) {
+    lotes.push(candidatos.slice(indice, indice + HASH_BATCH_SIZE))
+  }
+
+  await mapComConcorrencia(lotes, HASH_BATCH_CONCURRENCY, async (lote) => {
+    lote.forEach((details) => {
+      details.integrity.hash = {
+        algorithm: 'SHA-256', hash: null, status: 'not_verified', reason: 'HASH_COMMAND_UNAVAILABLE',
+      }
+    })
+    try {
+      const saida = await runAdb(
+        ['-s', serial, 'shell', 'sha256sum', ...lote.map((details) => details.apkPath)],
+        { timeout: HASH_ADB_TIMEOUT },
+      )
+      const hashesPorCaminho = new Map()
+      saida.split(/\r?\n/).forEach((linha) => {
+        const match = linha.trim().match(/^([a-fA-F0-9]{64})\s+(.+)$/)
+        if (match && caminhoApkValido(match[2])) hashesPorCaminho.set(match[2], match[1].toLowerCase())
+      })
+      lote.forEach((details) => {
+        const hash = hashesPorCaminho.get(details.apkPath)
+        details.integrity.hash = hash
+          ? { algorithm: 'SHA-256', hash, status: 'available', reason: null }
+          : { algorithm: 'SHA-256', hash: null, status: 'not_verified', reason: 'INVALID_HASH_OUTPUT' }
+      })
+    } catch {
+      // A indisponibilidade permanece registrada individualmente, sem virar finding.
+    }
+  })
+
+  detalhesPorPacote.forEach((details) => {
+    if (!details?.available) return
+    if (!caminhoApkValido(details.apkPath)) {
+      details.integrity.hash = {
+        algorithm: 'SHA-256', hash: null, status: 'not_verified', reason: 'APK_PATH_UNAVAILABLE',
+      }
+    }
+  })
+}
+
+async function mapComConcorrencia(items, limit, mapper) {
+  const results = new Array(items.length)
+  let nextIndex = 0
+  async function worker() {
+    while (nextIndex < items.length) {
+      const index = nextIndex
+      nextIndex += 1
+      results[index] = await mapper(items[index], index)
+    }
+  }
+  await Promise.all(Array.from({ length: Math.min(limit, items.length) }, () => worker()))
+  return results
+}
+
+async function listarAppsInstalados(serial, { includeSecurityDetails = false } = {}) {
   await validarDispositivoAutorizado(serial)
   const [usuarioRaw, sistemaRaw] = await Promise.all([
-    runAdb(['-s', serial, 'shell', 'pm', 'list', 'packages', '-3'], { timeout: EXTENDED_ADB_TIMEOUT }),
+    runAdb(['-s', serial, 'shell', 'pm', 'list', 'packages', '-3', '-f'], { timeout: EXTENDED_ADB_TIMEOUT }),
     runAdb(['-s', serial, 'shell', 'pm', 'list', 'packages', '-s'], { timeout: EXTENDED_ADB_TIMEOUT }),
   ])
 
   const paraApps = (saida, type) => saida
     .split(/\r?\n/)
     .map((linha) => linha.trim().replace(/^package:/, ''))
-    .filter(pacoteValido)
-    .map((packageName) => ({
+    .map((linha) => {
+      if (type !== 'user' || !linha.includes('=')) return { packageName: linha, apkPath: null }
+      const separator = linha.lastIndexOf('=')
+      return { packageName: linha.slice(separator + 1), apkPath: linha.slice(0, separator) }
+    })
+    .filter((app) => pacoteValido(app.packageName))
+    .map(({ packageName, apkPath }) => ({
       name: null,
       packageName,
+      ...(caminhoApkValido(apkPath) ? { apkPath } : {}),
       type,
       status: 'not_analyzed',
       statusLabel: 'Não analisado',
@@ -281,13 +519,57 @@ async function listarAppsInstalados(serial) {
       appsPorPacote.set(app.packageName, app)
     }
   })
-  const apps = [...appsPorPacote.values()].sort((a, b) => a.packageName.localeCompare(b.packageName))
+  let apps = [...appsPorPacote.values()].sort((a, b) => a.packageName.localeCompare(b.packageName))
+  let detailsCollectionDurationMs = null
+
+  if (includeSecurityDetails && userApps.length > 0) {
+    const enabledAccessibilityServices = await coletarServicosAcessibilidade(serial)
+    const detailsStartedAt = Date.now()
+    const userDetails = await mapComConcorrencia(userApps, APP_DETAILS_CONCURRENCY, async (app) => {
+      try {
+        const saida = await runAdb(
+          ['-s', serial, 'shell', 'dumpsys', 'package', app.packageName],
+          { timeout: EXTENDED_ADB_TIMEOUT },
+        )
+        return [app.packageName, parseDetalhesPacote(saida, app.packageName, enabledAccessibilityServices, app.apkPath)]
+      } catch {
+        return [app.packageName, { available: false, reason: 'PACKAGE_DETAILS_UNAVAILABLE' }]
+      }
+    })
+    const detalhesPorPacote = new Map(userDetails)
+    await coletarHashesApks(serial, detalhesPorPacote)
+    apps = apps.map((app) => app.type === 'user'
+      ? { ...app, securityDetails: detalhesPorPacote.get(app.packageName) }
+      : app)
+    detailsCollectionDurationMs = Date.now() - detailsStartedAt
+  }
 
   return {
     total: apps.length,
     userTotal: apps.filter((app) => app.type === 'user').length,
     systemTotal: apps.filter((app) => app.type === 'system').length,
     items: apps,
+    detailsCollectionDurationMs,
+  }
+}
+
+async function coletarAnalisePermissoes(serial, appsExistentes = null) {
+  const apps = Array.isArray(appsExistentes?.items)
+    ? appsExistentes
+    : await listarAppsInstalados(serial, { includeSecurityDetails: true })
+  const itensUsuario = apps.items.filter((app) => app.type === 'user')
+  const analisados = itensUsuario.filter((app) => app.securityDetails?.available)
+  const indisponiveis = itensUsuario.length - analisados.length
+
+  return {
+    available: analisados.length > 0 || itensUsuario.length === 0,
+    source: 'adb_dumpsys_package',
+    analyzedApps: analisados.length,
+    unavailableApps: indisponiveis,
+    items: itensUsuario,
+    message: indisponiveis > 0
+      ? `Não foi possível consultar detalhes de permissões de ${indisponiveis} aplicativo(s) de usuário.`
+      : null,
   }
 }
 
@@ -397,6 +679,7 @@ async function executarScan(serial, { mode = 'quick', modules = [], onProgress =
     permissions: null,
     health: null,
     threats: [],
+    remediations: [],
     warnings: [],
     stages: {},
   }
@@ -419,11 +702,15 @@ async function executarScan(serial, { mode = 'quick', modules = [], onProgress =
       } else if (etapa.id === 'system') {
         resultado.system = await coletarIdentificacao(serial)
       } else if (etapa.id === 'apps') {
-        resultado.apps = await listarAppsInstalados(serial)
+        resultado.apps = await listarAppsInstalados(serial, { includeSecurityDetails: true })
       } else if (etapa.id === 'permissions') {
-        resultado.permissions = {
-          available: false,
-          message: 'Esta versão do Android não expõe, de forma consistente via ADB, as permissões concedidas por aplicativo. Nenhuma inferência foi feita.',
+        resultado.permissions = await coletarAnalisePermissoes(serial, resultado.apps)
+        if (resultado.permissions.unavailableApps > 0) {
+          resultado.warnings.push({
+            stage: 'permissions',
+            code: 'PARTIAL_PERMISSION_COLLECTION',
+            message: resultado.permissions.message,
+          })
         }
       } else if (etapa.id === 'security') {
         resultado.security = await coletarSinaisSeguranca(serial)
@@ -434,6 +721,20 @@ async function executarScan(serial, { mode = 'quick', modules = [], onProgress =
       } else if (etapa.id === 'performance') {
         resultado.memory = await coletarMemoria(serial)
       } else if (etapa.id === 'consolidation') {
+        const analiseSeguranca = analisarSeguranca(resultado)
+        const remediationActions = planejarRemediacoes(
+          analiseSeguranca.findings,
+          resultado.apps?.items || resultado.permissions?.items || [],
+        )
+        if (resultado.security || analiseSeguranca.findings.length > 0 || analiseSeguranca.appRiskProfiles.length > 0) {
+          resultado.security = {
+            ...(resultado.security || { collectionAvailable: false }),
+            findings: analiseSeguranca.findings,
+            appRiskProfiles: analiseSeguranca.appRiskProfiles,
+            remediationActions,
+          }
+        }
+        resultado.threats = analiseSeguranca.threats
         resultado.health = calcularHealthScore(resultado)
       }
       resultado.stages[etapa.id] = { ...resultado.stages[etapa.id], status: 'completed', finishedAt: new Date().toISOString() }
@@ -558,11 +859,11 @@ async function obterPreviewRemocao(serial, packageName) {
     removable: true,
     confirmationToken,
     app,
-    impact: 'O Android desinstalará este aplicativo de usuário. Componentes de sistema não serão alterados.',
+    impact: 'O Android desinstalará este aplicativo de usuário. Dados e configurações locais do aplicativo podem ser perdidos; componentes de sistema não serão alterados.',
   }
 }
 
-async function desinstalarAppUsuario(serial, packageName, confirmationToken) {
+async function executarDesinstalacaoComToken({ serial, packageName, confirmationToken }) {
   const preview = removalTokens.get(confirmationToken)
   removalTokens.delete(confirmationToken)
   if (!preview || preview.expiresAt < Date.now() || preview.serial !== serial || preview.packageName !== packageName) {
@@ -582,7 +883,35 @@ async function desinstalarAppUsuario(serial, packageName, confirmationToken) {
   if (!/^success$/im.test(saida)) {
     throw criarErro('UNINSTALL_FAILED', saida || 'O Android não confirmou a desinstalação do aplicativo.')
   }
-  return { ok: true, packageName, message: 'Aplicativo removido com sucesso.' }
+  return { ok: true, packageName, output: 'Success' }
+}
+
+async function verificarAusenciaPacoteUsuario({ serial, packageName }) {
+  if (!serialValido(serial) || !pacoteValido(packageName)) {
+    return { status: 'not_verified', installed: null, source: 'package_manager' }
+  }
+  try {
+    await validarDispositivoAutorizado(serial)
+    const saida = await runAdb(
+      ['-s', serial, 'shell', 'pm', 'list', 'packages', '--user', '0', packageName],
+      { timeout: EXTENDED_ADB_TIMEOUT },
+    )
+    const installed = saida.split(/\r?\n/)
+      .map((linha) => linha.trim().replace(/^package:/, ''))
+      .some((pacote) => pacote === packageName)
+    return { status: 'verified', installed, source: 'package_manager', user: 0 }
+  } catch {
+    return { status: 'not_verified', installed: null, source: 'package_manager', user: 0 }
+  }
+}
+
+const remediationExecutor = criarExecutorRemediacao({
+  uninstall: executarDesinstalacaoComToken,
+  verify: verificarAusenciaPacoteUsuario,
+})
+
+async function desinstalarAppUsuario(serial, packageName, confirmationToken, findingId = null) {
+  return remediationExecutor.execute({ serial, packageName, confirmationToken, findingId })
 }
 
 module.exports = {

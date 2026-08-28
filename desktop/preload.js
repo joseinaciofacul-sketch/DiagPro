@@ -17,8 +17,8 @@ contextBridge.exposeInMainWorld('diagpro', {
   onScanProgress: (callback) => assinar('scan-progress', callback),
   getInstalledApps: ({ serial }) => ipcRenderer.invoke('get-installed-apps', { serial }),
   getRemovalPreview: ({ serial, packageName }) => ipcRenderer.invoke('get-removal-preview', { serial, packageName }),
-  uninstallUserApp: ({ serial, packageName, confirmationToken }) => ipcRenderer.invoke(
+  uninstallUserApp: ({ serial, packageName, confirmationToken, findingId }) => ipcRenderer.invoke(
     'uninstall-user-app',
-    { serial, packageName, confirmationToken },
+    { serial, packageName, confirmationToken, findingId },
   ),
 })

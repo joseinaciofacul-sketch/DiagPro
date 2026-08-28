@@ -255,6 +255,52 @@
 
 .dp-devices-apps-card { margin-bottom: 0; }
 
+.dp-devices-app-toolbar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  margin-top: 16px;
+}
+
+.dp-devices-app-search {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  width: min(100%, 410px);
+  min-height: 36px;
+  padding: 0 11px;
+  border: 1px solid #334155;
+  border-radius: 8px;
+  background: #0d1422;
+  color: #64748b;
+}
+
+.dp-devices-app-search:focus-within { border-color: #3b82f6; }
+.dp-devices-app-search input { width: 100%; border: 0; outline: 0; background: transparent; color: #e2e8f0; font: inherit; font-size: 12px; }
+.dp-devices-app-search input::placeholder { color: #64748b; }
+
+.dp-devices-app-filters { display: flex; flex-wrap: wrap; gap: 6px; }
+.dp-devices-app-filters button,
+.dp-devices-detail-btn {
+  min-height: 31px;
+  padding: 6px 10px;
+  border: 1px solid #334155;
+  border-radius: 7px;
+  background: #172033;
+  color: #94a3b8;
+  font: inherit;
+  font-size: 11px;
+  font-weight: 700;
+  cursor: pointer;
+}
+.dp-devices-app-filters button:hover,
+.dp-devices-app-filters button.active { border-color: #3b82f6; background: #1e3a5f; color: #dbeafe; }
+.dp-devices-filter-empty { margin-top: 15px; }
+.dp-devices-app-groups { display: grid; gap: 17px; margin-top: 17px; }
+.dp-devices-app-group-title { display: flex; align-items: center; gap: 8px; color: #cbd5e1; font-size: 12px; font-weight: 700; }
+.dp-devices-app-group-title strong { padding: 2px 7px; border-radius: 999px; background: #1e293b; color: #93c5fd; font-size: 10px; }
+
 .dp-devices-icon-action {
   width: 34px;
   height: 34px;
@@ -294,7 +340,7 @@
 
 .dp-devices-app-list {
   max-height: 430px;
-  margin-top: 15px;
+  margin-top: 8px;
   overflow: auto;
   border: 1px solid #243145;
   border-radius: 10px;
@@ -302,7 +348,7 @@
 
 .dp-devices-app-row {
   display: grid;
-  grid-template-columns: auto minmax(180px, 1fr) 105px 150px auto;
+  grid-template-columns: auto minmax(180px, 1fr) 105px 150px minmax(180px, auto);
   align-items: center;
   gap: 14px;
   min-width: 720px;
@@ -330,6 +376,7 @@
 .dp-devices-app-name span { display: block; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .dp-devices-app-name strong { color: #e2e8f0; font-size: 13px; }
 .dp-devices-app-name span { margin-top: 3px; color: #64748b; font-size: 11px; }
+.dp-devices-app-name .package-primary { margin-top: 0; color: #e2e8f0; font-size: 13px; font-weight: 600; }
 
 .dp-devices-app-detail { min-width: 0; }
 .dp-devices-app-detail > strong { display: block; overflow: hidden; color: #cbd5e1; font-size: 12px; font-weight: 600; text-overflow: ellipsis; white-space: nowrap; }
@@ -350,6 +397,8 @@
 }
 
 .dp-devices-remove-btn:hover:not(:disabled) { background: rgba(185, 28, 28, 0.48); color: #fff; }
+.dp-devices-app-actions { display: flex; align-items: center; justify-content: flex-end; gap: 7px; }
+.dp-devices-detail-btn:hover { border-color: #3b82f6; color: #fff; }
 .dp-devices-app-no-action { justify-self: end; color: #64748b; font-size: 11px; white-space: nowrap; }
 
 .dp-devices-modal-backdrop {
@@ -393,6 +442,17 @@
   color: #fca5a5;
 }
 
+.dp-devices-detail-modal-icon {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 37px;
+  height: 37px;
+  border-radius: 10px;
+  background: rgba(37, 99, 235, 0.2);
+  color: #93c5fd;
+}
+
 .dp-devices-modal-header h2 { margin: 0 0 3px; color: #f8fafc; font-size: 16px; }
 .dp-devices-modal-header p { margin: 0; color: #94a3b8; font-size: 12px; line-height: 1.45; }
 .dp-devices-modal-header > button { align-self: start; padding: 3px; background: transparent; color: #94a3b8; }
@@ -420,6 +480,8 @@
 
 .dp-devices-modal-details > div { min-width: 0; }
 .dp-devices-modal-details strong { display: block; color: #cbd5e1; font-size: 12px; line-height: 1.45; overflow-wrap: anywhere; }
+.dp-devices-basic-details { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+.dp-devices-basic-details > div:nth-child(2) { grid-column: 1 / -1; }
 
 .dp-devices-modal-note,
 .dp-devices-modal-warning {
@@ -466,7 +528,9 @@
   .dp-devices-fields,
   .dp-devices-scan-metrics { grid-template-columns: repeat(2, minmax(0, 1fr)); }
   .dp-devices-app-list { overflow-x: auto; }
+  .dp-devices-app-toolbar { align-items: stretch; flex-direction: column; }
   .dp-devices-modal-details { grid-template-columns: 1fr; }
+  .dp-devices-basic-details > div:nth-child(2) { grid-column: auto; }
 }
 
 @media (max-width: 480px) {

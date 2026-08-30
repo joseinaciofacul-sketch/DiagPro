@@ -1,12 +1,14 @@
-import { useEffect, useRef, useState } from 'react'
+import { useCallback, useEffect, useRef, useState } from 'react'
 import {
   AlertTriangle, AppWindow, BatteryCharging, CheckCircle2, ChevronRight,
-  Cpu, HardDrive, Loader2, MemoryStick, Play, Settings2, ShieldCheck,
+  Cpu, CreditCard, HardDrive, Loader2, MemoryStick, Play, Settings2, ShieldCheck,
   SlidersHorizontal, Smartphone, Trash2, RotateCcw, Wrench, X,
 } from 'lucide-react'
 import useDeviceStatus from '../hooks/useDeviceStatus.js'
 import DeviceCard from '../components/DeviceCard.jsx'
-import { salvarDiagnostico } from '../services/diagnostics.js'
+import { salvarDiagnostico, salvarRemediacao } from '../services/diagnostics.js'
+import { getDiagnosticCapability } from '../services/subscription.js'
+import { getDefaultScanMode } from '../utils/preferences.js'
 import './ScannerPage.css'
 
 const MODOS = [
@@ -81,6 +83,13 @@ const STATUS_REMEDIACAO = {
   not_available: 'Sem correção automática segura',
 }
 
+const STATUS_SINCRONIZACAO = {
+  saving: 'Sincronizando auditoria...',
+  saved: 'Auditoria salva no histórico',
+  failed: 'Auditoria não sincronizada',
+  not_available: 'Auditoria mantida nesta sessão',
+}
+
 function valor(valorRecebido, sufixo = '') {
   return valorRecebido === null || valorRecebido === undefined ? 'Não disponível' : `${valorRecebido}${sufixo}`
 }
@@ -103,9 +112,9 @@ function resumirHash(hash) {
     : hash || 'Não verificado'
 }
 
-function ScannerPage({ accessToken }) {
+function ScannerPage({ accessToken, onNavigate }) {
   const dispositivo = useDeviceStatus()
-  const [modo, setModo] = useState('quick')
+  const [modo, setModo] = useState(() => getDefaultScanMode())
   const [modulos, setModulos] = useState(MODULOS_INICIAIS)
   const [resultado, setResultado] = useState(null)
   const [progresso, setProgresso] = useState(null)
@@ -114,16 +123,41 @@ function ScannerPage({ accessToken }) {
   const [erro, setErro] = useState('')
   const [interrompido, setInterrompido] = useState(false)
   const [persistencia, setPersistencia] = useState({ status: 'idle', id: null })
+  const [licenca, setLicenca] = useState({ status: 'checking', capability: null, message: '' })
   const [remediationStates, setRemediationStates] = useState({})
   const [remediationModal, setRemediationModal] = useState(null)
   const [openGuides, setOpenGuides] = useState({})
   const scanAtivoRef = useRef(null)
   const proximoScanIdRef = useRef(0)
-  const persistenciaScanIdRef = useRef(0)
+  const persistenciaDiagnosticoRef = useRef({ scanId: 0, id: null, promise: null })
   const findings = Array.isArray(resultado?.security?.findings) ? resultado.security.findings : []
   const remediationActions = Array.isArray(resultado?.security?.remediationActions)
     ? resultado.security.remediationActions
     : []
+
+  const verificarLicenca = useCallback(async () => {
+    setLicenca({ status: 'checking', capability: null, message: '' })
+    try {
+      const capability = await getDiagnosticCapability({ accessToken })
+      setLicenca({
+        status: capability.allowed ? 'allowed' : 'blocked',
+        capability,
+        message: capability.message,
+      })
+      return capability
+    } catch (error) {
+      setLicenca({
+        status: error?.status === 401 ? 'auth-error' : 'error',
+        capability: null,
+        message: error?.status === 401
+          ? 'Sua sessão expirou. Entre novamente para verificar a licença.'
+          : 'Não foi possível verificar a licença. Tente novamente.',
+      })
+      return null
+    }
+  }, [accessToken])
+
+  useEffect(() => { void verificarLicenca() }, [verificarLicenca])
 
   useEffect(() => {
     if (!window.diagpro?.onScanProgress) return undefined
@@ -188,6 +222,7 @@ function ScannerPage({ accessToken }) {
 
   const podeIniciar = dispositivo.status === 'connected'
     && !carregando
+    && licenca.status === 'allowed'
     && (modo !== 'custom' || modulos.length > 0)
 
   function alternarModulo(id) {
@@ -197,7 +232,17 @@ function ScannerPage({ accessToken }) {
   }
 
   function atualizarEstadoRemediacao(actionId, status, message = '') {
-    setRemediationStates((atuais) => ({ ...atuais, [actionId]: { status, message } }))
+    setRemediationStates((atuais) => ({
+      ...atuais,
+      [actionId]: { ...atuais[actionId], status, message },
+    }))
+  }
+
+  function atualizarSincronizacaoRemediacao(actionId, persistenceStatus, persistenceMessage = '') {
+    setRemediationStates((atuais) => ({
+      ...atuais,
+      [actionId]: { ...atuais[actionId], persistenceStatus, persistenceMessage },
+    }))
   }
 
   function registrarAuditoria(remediation) {
@@ -206,6 +251,58 @@ function ScannerPage({ accessToken }) {
       ...atual,
       remediations: [...(atual.remediations || []), remediation],
     } : atual)
+  }
+
+  async function persistirAuditoriaRemediacao(actionId, remediation) {
+    if (!remediation?.executionId) {
+      atualizarSincronizacaoRemediacao(
+        actionId,
+        'not_available',
+        'O executor não retornou uma auditoria identificável para sincronização.',
+      )
+      return
+    }
+
+    const binding = persistenciaDiagnosticoRef.current
+    let diagnosticoId = binding.id
+    if (!diagnosticoId && binding.promise) {
+      atualizarSincronizacaoRemediacao(actionId, 'saving', 'Aguardando o diagnóstico ser salvo no histórico.')
+      try {
+        const diagnostico = await binding.promise
+        if (persistenciaDiagnosticoRef.current !== binding) return
+        diagnosticoId = diagnostico?.id
+      } catch {
+        diagnosticoId = null
+      }
+    }
+
+    if (persistenciaDiagnosticoRef.current !== binding) return
+    if (!diagnosticoId) {
+      atualizarSincronizacaoRemediacao(
+        actionId,
+        'not_available',
+        'A correção foi mantida nesta sessão, pois o diagnóstico não possui ID salvo.',
+      )
+      return
+    }
+
+    atualizarSincronizacaoRemediacao(actionId, 'saving', 'Enviando o registro técnico da correção.')
+    try {
+      const resposta = await salvarRemediacao(diagnosticoId, remediation, { accessToken })
+      if (persistenciaDiagnosticoRef.current !== binding) return
+      atualizarSincronizacaoRemediacao(
+        actionId,
+        'saved',
+        resposta?.duplicate ? 'Este registro já estava salvo no histórico.' : `Vinculada ao diagnóstico #${diagnosticoId}.`,
+      )
+    } catch {
+      if (persistenciaDiagnosticoRef.current !== binding) return
+      atualizarSincronizacaoRemediacao(
+        actionId,
+        'failed',
+        'A correção não será repetida; apenas o registro no histórico falhou.',
+      )
+    }
   }
 
   async function prepararRemocao(finding, action) {
@@ -264,7 +361,7 @@ function ScannerPage({ accessToken }) {
         : result?.ok
           ? 'not_verified'
           : 'failed'
-      registrarAuditoria(result?.remediation || {
+      const remediation = result?.remediation || {
         findingId: modal.finding.id,
         action: 'uninstall_user_app',
         packageName: modal.finding.packageName,
@@ -272,11 +369,13 @@ function ScannerPage({ accessToken }) {
         finishedAt: new Date().toISOString(),
         status,
         verification: result?.verification || { status: 'not_verified', installed: null },
-      })
+      }
+      registrarAuditoria(remediation)
       atualizarEstadoRemediacao(modal.action.id, status, result?.message || '')
+      void persistirAuditoriaRemediacao(modal.action.id, remediation)
     } catch {
       const now = new Date().toISOString()
-      registrarAuditoria({
+      const remediation = {
         findingId: modal.finding.id,
         action: 'uninstall_user_app',
         packageName: modal.finding.packageName,
@@ -284,15 +383,24 @@ function ScannerPage({ accessToken }) {
         finishedAt: now,
         status: 'failed',
         verification: { status: 'not_verified', installed: null },
-      })
+      }
+      registrarAuditoria(remediation)
       atualizarEstadoRemediacao(modal.action.id, 'failed', 'Não foi possível executar a remoção.')
+      void persistirAuditoriaRemediacao(modal.action.id, remediation)
     } finally {
       setRemediationModal(null)
     }
   }
 
   async function iniciarDiagnostico() {
-    if (!podeIniciar || !window.diagpro?.startScan) return
+    const configuracaoValida = dispositivo.status === 'connected'
+      && !carregando
+      && (modo !== 'custom' || modulos.length > 0)
+    if (!configuracaoValida || licenca.status !== 'allowed' || !window.diagpro?.startScan) return
+
+    const capability = await verificarLicenca()
+    if (!capability?.allowed || dispositivo.status !== 'connected') return
+
     const scanAtual = {
       id: proximoScanIdRef.current + 1,
       serial: dispositivo.serial,
@@ -306,6 +414,7 @@ function ScannerPage({ accessToken }) {
     setInterrompido(false)
     setResultado(null)
     setPersistencia({ status: 'idle', id: null })
+    persistenciaDiagnosticoRef.current = { scanId: scanAtual.id, id: null, promise: null }
     setRemediationStates({})
     setRemediationModal(null)
     setOpenGuides({})
@@ -336,17 +445,31 @@ function ScannerPage({ accessToken }) {
         }, atuais)
       })
       setProgresso({ progress: 100, label: 'Análise concluída' })
-      persistenciaScanIdRef.current = scanAtual.id
       setPersistencia({ status: 'saving', id: null })
-      salvarDiagnostico(resposta.data, {
+      const promisePersistencia = salvarDiagnostico(resposta.data, {
         serial: scanAtual.serial,
         accessToken,
-      }).then((diagnostico) => {
-        if (persistenciaScanIdRef.current !== scanAtual.id) return
+      })
+      const bindingPersistencia = {
+        scanId: scanAtual.id,
+        id: null,
+        promise: promisePersistencia,
+      }
+      persistenciaDiagnosticoRef.current = bindingPersistencia
+      promisePersistencia.then((diagnostico) => {
+        if (persistenciaDiagnosticoRef.current !== bindingPersistencia) return
+        bindingPersistencia.id = diagnostico.id
         setPersistencia({ status: 'saved', id: diagnostico.id })
-      }).catch(() => {
-        if (persistenciaScanIdRef.current !== scanAtual.id) return
+      }).catch((error) => {
+        if (persistenciaDiagnosticoRef.current !== bindingPersistencia) return
         setPersistencia({ status: 'error', id: null })
+        if (error?.status === 403 && error?.details?.code) {
+          setLicenca({
+            status: 'blocked',
+            capability: error.details,
+            message: error.details.message || 'A licença não permite salvar um novo diagnóstico.',
+          })
+        }
       })
     } catch {
       if (scanAtivoRef.current !== scanAtual || !scanAtual.valido) return
@@ -397,9 +520,14 @@ function ScannerPage({ accessToken }) {
             </div>
           )}
 
+          {licenca.status === 'checking' && <div className="scanner-license-state checking"><Loader2 size={17} className="spin" /><div><strong>Verificando licença...</strong><span>Consultando a autorização real no backend.</span></div></div>}
+          {licenca.status === 'blocked' && <div className="scanner-license-state blocked"><AlertTriangle size={18} /><div><strong>Novo diagnóstico indisponível</strong><span>{licenca.message}</span>{licenca.capability?.code === 'monthly_diagnostic_limit_reached' && <small>Uso atual: {licenca.capability.usage} de {licenca.capability.limit} diagnósticos no mês.</small>}</div><button type="button" onClick={() => onNavigate?.('Plano e assinatura')}><CreditCard size={14} /> Ver plano e assinatura</button></div>}
+          {(licenca.status === 'error' || licenca.status === 'auth-error') && <div className="scanner-license-state error"><AlertTriangle size={18} /><div><strong>Não foi possível verificar a licença</strong><span>{licenca.message}</span></div><button type="button" onClick={verificarLicenca}><RotateCcw size={14} /> Tentar novamente</button></div>}
+          {licenca.status === 'allowed' && licenca.capability?.limit !== null && <div className="scanner-license-usage"><ShieldCheck size={15} /><span>Licença liberada: {licenca.capability.usage} de {licenca.capability.limit} diagnósticos utilizados neste mês.</span></div>}
+
           <button className="scanner-start" onClick={iniciarDiagnostico} disabled={!podeIniciar}>
-            {carregando ? <Loader2 size={19} className="spin" /> : <Play size={19} fill="currentColor" />}
-            {carregando ? 'Analisando dispositivo...' : 'Iniciar análise'}
+            {carregando || licenca.status === 'checking' ? <Loader2 size={19} className="spin" /> : <Play size={19} fill="currentColor" />}
+            {carregando ? 'Analisando dispositivo...' : licenca.status === 'checking' ? 'Verificando licença...' : 'Iniciar análise'}
           </button>
         </section>
 
@@ -498,6 +626,12 @@ function ScannerPage({ accessToken }) {
                           <div className={`scanner-remediation-status status-${remediationState.status}`}>
                             <strong>{STATUS_REMEDIACAO[remediationState.status] || remediationState.status}</strong>
                             {remediationState.message && <span>{remediationState.message}</span>}
+                          </div>
+                        )}
+                        {remediationState?.persistenceStatus && (
+                          <div className={`scanner-remediation-sync sync-${remediationState.persistenceStatus}`}>
+                            <strong>{STATUS_SINCRONIZACAO[remediationState.persistenceStatus] || remediationState.persistenceStatus}</strong>
+                            {remediationState.persistenceMessage && <span>{remediationState.persistenceMessage}</span>}
                           </div>
                         )}
                         {action.type === 'uninstall_user_app' && remediationState?.status === 'available' && (

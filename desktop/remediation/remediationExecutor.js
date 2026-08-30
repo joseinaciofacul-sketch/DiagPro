@@ -1,10 +1,17 @@
+const crypto = require('crypto')
+
 function criarErro(codigo, mensagem) {
   const erro = new Error(mensagem)
   erro.codigo = codigo
   return erro
 }
 
-function criarExecutorRemediacao({ uninstall, verify, now = () => new Date().toISOString() }) {
+function criarExecutorRemediacao({
+  uninstall,
+  verify,
+  now = () => new Date().toISOString(),
+  createExecutionId = () => crypto.randomUUID(),
+}) {
   if (typeof uninstall !== 'function' || typeof verify !== 'function') {
     throw new TypeError('Executor de remediação requer funções uninstall e verify.')
   }
@@ -26,8 +33,10 @@ function criarExecutorRemediacao({ uninstall, verify, now = () => new Date().toI
     consumedTokens.add(confirmationToken)
     activePackages.add(packageKey)
     const startedAt = now()
+    const executionId = createExecutionId()
     const transitions = [{ status: 'executing', at: startedAt }]
     const base = {
+      executionId,
       findingId,
       action: 'uninstall_user_app',
       packageName,

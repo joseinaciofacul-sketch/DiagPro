@@ -1,12 +1,18 @@
 from rest_framework.viewsets import ModelViewSet
 from rest_framework import mixins, viewsets
 from rest_framework.decorators import action
+from rest_framework.generics import ListAPIView, RetrieveUpdateAPIView
+from rest_framework.views import APIView
 from rest_framework.response import Response
+from rest_framework import status
 from rest_framework.exceptions import ValidationError
+from django.contrib.auth import get_user_model
 from django.db.models import Count, Max
 from django.shortcuts import get_object_or_404
+from django.db import transaction
+from copy import deepcopy
 
-from .models import Empresa, Cliente, Dispositivo, Analise, Relatorio, Licenca, Diagnostico
+from .models import Empresa, Cliente, Dispositivo, Analise, Relatorio, Plano, Licenca, Diagnostico
 from .serializers import (
     EmpresaSerializer,
     ClienteSerializer,
@@ -14,13 +20,46 @@ from .serializers import (
     AnaliseSerializer,
     RelatorioSerializer,
     LicencaSerializer,
+    PlanoSerializer,
     DiagnosticoSerializer,
+    RemediationAuditSerializer,
+    CurrentUserSerializer,
+    ChangePasswordSerializer,
 )
+from .subscriptions import diagnostic_capability, get_user_subscription, subscription_usage
 
 
-class EmpresaViewSet(ModelViewSet):
-    queryset = Empresa.objects.all()
+class EmpresaViewSet(
+    mixins.CreateModelMixin,
+    mixins.ListModelMixin,
+    mixins.RetrieveModelMixin,
+    mixins.UpdateModelMixin,
+    viewsets.GenericViewSet,
+):
     serializer_class = EmpresaSerializer
+    http_method_names = ['get', 'post', 'patch', 'head', 'options']
+
+    def get_queryset(self):
+        return Empresa.objects.filter(usuario=self.request.user).order_by('id')
+
+    def perform_create(self, serializer):
+        serializer.save(usuario=self.request.user)
+
+
+class CurrentUserView(RetrieveUpdateAPIView):
+    serializer_class = CurrentUserSerializer
+    http_method_names = ['get', 'patch', 'head', 'options']
+
+    def get_object(self):
+        return self.request.user
+
+
+class ChangePasswordView(APIView):
+    def post(self, request):
+        serializer = ChangePasswordSerializer(data=request.data, context={'request': request})
+        serializer.is_valid(raise_exception=True)
+        serializer.save()
+        return Response({'detail': 'Senha alterada com sucesso. Faça login novamente.'})
 
 
 class ClienteViewSet(
@@ -65,9 +104,32 @@ class RelatorioViewSet(ModelViewSet):
     serializer_class = RelatorioSerializer
 
 
-class LicencaViewSet(ModelViewSet):
-    queryset = Licenca.objects.all()
+class LicencaViewSet(viewsets.ReadOnlyModelViewSet):
     serializer_class = LicencaSerializer
+
+    def get_queryset(self):
+        return Licenca.objects.filter(usuario=self.request.user).select_related('plano')
+
+
+class PlanListView(ListAPIView):
+    serializer_class = PlanoSerializer
+
+    def get_queryset(self):
+        return Plano.objects.filter(ativo=True).order_by('nome', 'id')
+
+
+class CurrentSubscriptionView(APIView):
+    def get(self, request):
+        license_record = get_user_subscription(request.user)
+        capability = diagnostic_capability(request.user, license_record)
+        if license_record is None:
+            return Response({'assinatura': None, 'uso': None, 'capacidade_diagnostico': capability})
+
+        return Response({
+            'assinatura': LicencaSerializer(license_record, context={'request': request}).data,
+            'uso': subscription_usage(request.user),
+            'capacidade_diagnostico': capability,
+        })
 
 
 class DiagnosticoViewSet(
@@ -89,6 +151,14 @@ class DiagnosticoViewSet(
     def perform_create(self, serializer):
         serializer.save(usuario=self.request.user)
 
+    @transaction.atomic
+    def create(self, request, *args, **kwargs):
+        get_user_model().objects.select_for_update().only('pk').get(pk=request.user.pk)
+        capability = diagnostic_capability(request.user)
+        if not capability['allowed']:
+            return Response(capability, status=status.HTTP_403_FORBIDDEN)
+        return super().create(request, *args, **kwargs)
+
     @action(detail=True, methods=['patch'], url_path='cliente')
     def associar_cliente(self, request, pk=None):
         diagnostico = self.get_object()
@@ -107,3 +177,53 @@ class DiagnosticoViewSet(
 
         diagnostico.save(update_fields=['cliente'])
         return Response(self.get_serializer(diagnostico).data)
+
+    @action(detail=True, methods=['post'], url_path='remediations')
+    def registrar_remediacao(self, request, pk=None):
+        diagnostico = self.get_object()
+        serializer = RemediationAuditSerializer(
+            data=request.data,
+            context={'request': request, 'diagnostico': diagnostico},
+        )
+        serializer.is_valid(raise_exception=True)
+        remediation = dict(serializer.data)
+        execution_id = remediation['executionId']
+
+        with transaction.atomic():
+            diagnostico = Diagnostico.objects.select_for_update().get(
+                pk=diagnostico.pk,
+                usuario=request.user,
+            )
+            resultado = deepcopy(diagnostico.resultado_tecnico or {})
+            remediations = resultado.get('remediations', [])
+            if not isinstance(remediations, list):
+                raise ValidationError({'remediations': 'O histórico técnico existente é inválido.'})
+
+            existing = next(
+                (
+                    item for item in remediations
+                    if isinstance(item, dict) and item.get('executionId') == execution_id
+                ),
+                None,
+            )
+            if existing is not None:
+                return Response({
+                    'diagnosticId': diagnostico.id,
+                    'created': False,
+                    'duplicate': True,
+                    'remediation': existing,
+                    'remediationsCount': len(remediations),
+                })
+
+            remediations.append(remediation)
+            resultado['remediations'] = remediations
+            diagnostico.resultado_tecnico = resultado
+            diagnostico.save(update_fields=['resultado_tecnico'])
+
+        return Response({
+            'diagnosticId': diagnostico.id,
+            'created': True,
+            'duplicate': False,
+            'remediation': remediation,
+            'remediationsCount': len(remediations),
+        }, status=status.HTTP_201_CREATED)

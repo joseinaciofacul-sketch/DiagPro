@@ -1,12 +1,13 @@
 from datetime import timedelta
 
-from django.contrib.auth import get_user_model
+from django.contrib import admin
+from django.contrib.auth import authenticate, get_user_model
 from django.utils import timezone
 from rest_framework import status
 from rest_framework.test import APITestCase
 from rest_framework_simplejwt.tokens import RefreshToken
 
-from .models import Cliente, Diagnostico
+from .models import Cliente, Diagnostico, Empresa, Licenca, Plano
 
 
 class DiagnosticoApiTests(APITestCase):
@@ -14,6 +15,18 @@ class DiagnosticoApiTests(APITestCase):
         user_model = get_user_model()
         self.usuario = user_model.objects.create_user(username='tecnico', password='senha-segura')
         self.outro_usuario = user_model.objects.create_user(username='outro', password='senha-segura')
+        self.plano = Plano.objects.create(
+            nome='Plano dos testes de diagnóstico',
+            slug='diagnosticos-testes',
+            max_diagnosticos_mes=None,
+        )
+        for usuario in (self.usuario, self.outro_usuario):
+            Licenca.objects.create(
+                usuario=usuario,
+                plano=self.plano,
+                status='active',
+                fim=timezone.now() + timedelta(days=30),
+            )
         self.inicio = timezone.now() - timedelta(minutes=2)
         self.fim = timezone.now()
 
@@ -111,6 +124,345 @@ class DiagnosticoApiTests(APITestCase):
         self.assertIn('serial', resposta.data)
         self.assertIn('modulos', resposta.data)
         self.assertIn('health_score', resposta.data)
+
+
+class DiagnosticLicenseEnforcementApiTests(APITestCase):
+    def setUp(self):
+        user_model = get_user_model()
+        self.usuario = user_model.objects.create_user(username='license-owner', password='senha-segura')
+        self.outro_usuario = user_model.objects.create_user(username='license-other', password='senha-segura')
+        self.inicio = timezone.now() - timedelta(minutes=2)
+        self.fim = timezone.now()
+
+    def autenticar(self, usuario=None):
+        access_token = str(RefreshToken.for_user(usuario or self.usuario).access_token)
+        self.client.credentials(HTTP_AUTHORIZATION=f'Bearer {access_token}')
+
+    def payload(self, serial='LICENSE-TEST'):
+        return {
+            'serial': serial,
+            'modo': 'quick',
+            'modulos': ['system'],
+            'iniciado_em': self.inicio.isoformat(),
+            'finalizado_em': self.fim.isoformat(),
+            'health_available': None,
+            'warnings': [],
+            'stages': {'system': {'status': 'completed'}},
+            'resultado_tecnico': {'mode': 'quick', 'serial': serial},
+        }
+
+    def criar_plano(self, limit=None):
+        return Plano.objects.create(
+            nome=f'Plano limite {limit}',
+            slug=f'license-limit-{Plano.objects.count() + 1}',
+            max_diagnosticos_mes=limit,
+        )
+
+    def criar_licenca(self, status_assinatura='active', limit=None, fim=None):
+        return Licenca.objects.create(
+            usuario=self.usuario,
+            plano=self.criar_plano(limit),
+            status=status_assinatura,
+            fim=fim or timezone.now() + timedelta(days=30),
+        )
+
+    def criar_diagnostico_direto(self, usuario=None, serial='DIRECT-LICENSE-TEST'):
+        return Diagnostico.objects.create(
+            usuario=usuario or self.usuario,
+            serial=serial,
+            modo='quick',
+            modulos=['system'],
+            iniciado_em=self.inicio,
+            finalizado_em=self.fim,
+            health_available=None,
+            resultado_tecnico={'mode': 'quick'},
+        )
+
+    def post(self, serial='LICENSE-TEST'):
+        return self.client.post('/api/diagnosticos/', self.payload(serial), format='json')
+
+    def assert_bloqueado(self, resposta, code):
+        self.assertEqual(resposta.status_code, status.HTTP_403_FORBIDDEN, resposta.data)
+        self.assertFalse(resposta.data['allowed'])
+        self.assertEqual(resposta.data['code'], code)
+
+    def test_sem_assinatura_bloqueia_novo_diagnostico(self):
+        self.autenticar()
+
+        resposta = self.post()
+
+        self.assert_bloqueado(resposta, 'subscription_required')
+        self.assertEqual(Diagnostico.objects.count(), 0)
+
+    def test_assinatura_active_permite_novo_diagnostico(self):
+        self.criar_licenca('active')
+        self.autenticar()
+
+        resposta = self.post()
+
+        self.assertEqual(resposta.status_code, status.HTTP_201_CREATED, resposta.data)
+
+    def test_assinatura_trial_permite_novo_diagnostico(self):
+        self.criar_licenca('trial')
+        self.autenticar()
+
+        resposta = self.post()
+
+        self.assertEqual(resposta.status_code, status.HTTP_201_CREATED, resposta.data)
+
+    def test_assinatura_expired_bloqueia_novo_diagnostico(self):
+        self.criar_licenca('expired')
+        self.autenticar()
+
+        self.assert_bloqueado(self.post(), 'subscription_expired')
+
+    def test_assinatura_canceled_bloqueia_novo_diagnostico(self):
+        self.criar_licenca('canceled')
+        self.autenticar()
+
+        self.assert_bloqueado(self.post(), 'subscription_canceled')
+
+    def test_assinatura_past_due_bloqueia_novo_diagnostico(self):
+        self.criar_licenca('past_due')
+        self.autenticar()
+
+        self.assert_bloqueado(self.post(), 'subscription_past_due')
+
+    def test_status_active_com_data_passada_e_tratado_como_expired(self):
+        self.criar_licenca('active', fim=timezone.now() - timedelta(seconds=1))
+        self.autenticar()
+
+        self.assert_bloqueado(self.post(), 'subscription_expired')
+
+    def test_limite_nulo_permite_quantidade_ilimitada(self):
+        self.criar_licenca('active', limit=None)
+        for index in range(12):
+            self.criar_diagnostico_direto(serial=f'UNLIMITED-{index}')
+        self.autenticar()
+
+        resposta = self.post('UNLIMITED-NEW')
+
+        self.assertEqual(resposta.status_code, status.HTTP_201_CREATED, resposta.data)
+        self.assertEqual(Diagnostico.objects.filter(usuario=self.usuario).count(), 13)
+
+    def test_limite_10_com_uso_9_permite_o_decimo(self):
+        self.criar_licenca('active', limit=10)
+        for index in range(9):
+            self.criar_diagnostico_direto(serial=f'BELOW-LIMIT-{index}')
+        self.autenticar()
+
+        resposta = self.post('TENTH-DIAGNOSTIC')
+
+        self.assertEqual(resposta.status_code, status.HTTP_201_CREATED, resposta.data)
+        self.assertEqual(Diagnostico.objects.filter(usuario=self.usuario).count(), 10)
+
+    def test_limite_10_com_uso_10_bloqueia_o_decimo_primeiro(self):
+        self.criar_licenca('active', limit=10)
+        for index in range(10):
+            self.criar_diagnostico_direto(serial=f'AT-LIMIT-{index}')
+        self.autenticar()
+
+        resposta = self.post('ELEVENTH-DIAGNOSTIC')
+
+        self.assert_bloqueado(resposta, 'monthly_diagnostic_limit_reached')
+        self.assertEqual(resposta.data['usage'], 10)
+        self.assertEqual(resposta.data['limit'], 10)
+        self.assertEqual(Diagnostico.objects.filter(usuario=self.usuario).count(), 10)
+
+    def test_uso_de_outro_usuario_nao_consome_o_limite(self):
+        self.criar_licenca('active', limit=1)
+        self.criar_diagnostico_direto(usuario=self.outro_usuario, serial='OTHER-USAGE')
+        self.autenticar()
+
+        resposta = self.post('OWNER-FIRST')
+
+        self.assertEqual(resposta.status_code, status.HTTP_201_CREATED, resposta.data)
+
+    def test_historico_e_detalhe_continuam_disponiveis_apos_expiracao(self):
+        diagnostico = self.criar_diagnostico_direto(serial='HISTORY-AFTER-EXPIRATION')
+        self.criar_licenca('active', fim=timezone.now() - timedelta(seconds=1))
+        self.autenticar()
+
+        listagem = self.client.get('/api/diagnosticos/')
+        detalhe = self.client.get(f'/api/diagnosticos/{diagnostico.id}/')
+
+        self.assertEqual(listagem.status_code, status.HTTP_200_OK, listagem.data)
+        self.assertEqual([item['id'] for item in listagem.data], [diagnostico.id])
+        self.assertEqual(detalhe.status_code, status.HTTP_200_OK, detalhe.data)
+
+    def test_criacao_sem_autenticacao_continua_negada(self):
+        resposta = self.post()
+
+        self.assertEqual(resposta.status_code, status.HTTP_401_UNAUTHORIZED)
+
+
+class RemediationPersistenceApiTests(APITestCase):
+    def setUp(self):
+        user_model = get_user_model()
+        self.usuario = user_model.objects.create_user(username='remediation-owner', password='senha-segura')
+        self.outro_usuario = user_model.objects.create_user(username='remediation-other', password='senha-segura')
+        self.finding_id = 'app.sensitive_capabilities.com.example.app'
+        self.package_name = 'com.example.app'
+        self.inicio = timezone.now() - timedelta(seconds=3)
+        self.fim = timezone.now()
+
+    def autenticar(self, usuario):
+        access_token = str(RefreshToken.for_user(usuario).access_token)
+        self.client.credentials(HTTP_AUTHORIZATION=f'Bearer {access_token}')
+
+    def resultado_tecnico(self, remediations=None):
+        return {
+            'mode': 'quick',
+            'health': {'available': True, 'score': 88, 'label': 'Boa'},
+            'stages': {'security': {'status': 'completed'}},
+            'security': {
+                'findings': [{
+                    'id': self.finding_id,
+                    'packageName': self.package_name,
+                    'title': 'Capacidades sensíveis observadas',
+                }],
+                'remediationActions': [{
+                    'id': f'remediation.{self.finding_id}',
+                    'findingId': self.finding_id,
+                    'packageName': self.package_name,
+                    'type': 'uninstall_user_app',
+                    'availability': 'available',
+                }],
+            },
+            'remediations': list(remediations or []),
+        }
+
+    def criar_diagnostico(self, usuario, resultado_tecnico=None):
+        return Diagnostico.objects.create(
+            usuario=usuario,
+            serial='SERIAL-REMEDIATION',
+            modo='quick',
+            modulos=['apps', 'security'],
+            iniciado_em=self.inicio - timedelta(minutes=1),
+            finalizado_em=self.inicio,
+            health_available=True,
+            health_score=88,
+            resultado_tecnico=resultado_tecnico or self.resultado_tecnico(),
+        )
+
+    def payload(self, execution_id='11111111-1111-4111-8111-111111111111', **overrides):
+        dados = {
+            'executionId': execution_id,
+            'findingId': self.finding_id,
+            'action': 'uninstall_user_app',
+            'packageName': self.package_name,
+            'startedAt': self.inicio.isoformat(),
+            'finishedAt': self.fim.isoformat(),
+            'status': 'resolved',
+            'transitions': [
+                {'status': 'executing', 'at': self.inicio.isoformat()},
+                {'status': 'verifying', 'at': (self.inicio + timedelta(seconds=1)).isoformat()},
+                {'status': 'resolved', 'at': self.fim.isoformat()},
+            ],
+            'verification': {
+                'status': 'verified',
+                'installed': False,
+                'source': 'package_manager',
+                'user': 0,
+            },
+        }
+        dados.update(overrides)
+        return dados
+
+    def endpoint(self, diagnostico_id):
+        return f'/api/diagnosticos/{diagnostico_id}/remediations/'
+
+    def test_criacao_autenticada_persiste_auditoria_real(self):
+        diagnostico = self.criar_diagnostico(self.usuario)
+        self.assertFalse(Licenca.objects.filter(usuario=self.usuario).exists())
+        self.autenticar(self.usuario)
+
+        resposta = self.client.post(self.endpoint(diagnostico.id), self.payload(), format='json')
+
+        self.assertEqual(resposta.status_code, status.HTTP_201_CREATED, resposta.data)
+        self.assertTrue(resposta.data['created'])
+        diagnostico.refresh_from_db()
+        auditoria = diagnostico.resultado_tecnico['remediations'][0]
+        self.assertEqual(auditoria['executionId'], self.payload()['executionId'])
+        self.assertEqual(auditoria['status'], 'resolved')
+        self.assertFalse(auditoria['verification']['installed'])
+
+    def test_diagnostico_de_outro_usuario_retorna_404(self):
+        diagnostico = self.criar_diagnostico(self.outro_usuario)
+        self.autenticar(self.usuario)
+
+        resposta = self.client.post(self.endpoint(diagnostico.id), self.payload(), format='json')
+
+        self.assertEqual(resposta.status_code, status.HTTP_404_NOT_FOUND)
+        diagnostico.refresh_from_db()
+        self.assertEqual(diagnostico.resultado_tecnico['remediations'], [])
+
+    def test_diagnostico_inexistente_retorna_404(self):
+        self.autenticar(self.usuario)
+
+        resposta = self.client.post(self.endpoint(999999), self.payload(), format='json')
+
+        self.assertEqual(resposta.status_code, status.HTTP_404_NOT_FOUND)
+
+    def test_preserva_todo_resultado_tecnico_anterior(self):
+        resultado_original = self.resultado_tecnico()
+        diagnostico = self.criar_diagnostico(self.usuario, resultado_original)
+        self.autenticar(self.usuario)
+
+        resposta = self.client.post(self.endpoint(diagnostico.id), self.payload(), format='json')
+
+        self.assertEqual(resposta.status_code, status.HTTP_201_CREATED, resposta.data)
+        diagnostico.refresh_from_db()
+        self.assertEqual(diagnostico.resultado_tecnico['health'], resultado_original['health'])
+        self.assertEqual(diagnostico.resultado_tecnico['stages'], resultado_original['stages'])
+        self.assertEqual(diagnostico.resultado_tecnico['security'], resultado_original['security'])
+
+    def test_adiciona_nova_auditoria_sem_substituir_as_anteriores(self):
+        anterior = self.payload('22222222-2222-4222-8222-222222222222')
+        diagnostico = self.criar_diagnostico(self.usuario, self.resultado_tecnico([anterior]))
+        self.autenticar(self.usuario)
+
+        resposta = self.client.post(self.endpoint(diagnostico.id), self.payload(), format='json')
+
+        self.assertEqual(resposta.status_code, status.HTTP_201_CREATED, resposta.data)
+        diagnostico.refresh_from_db()
+        auditorias = diagnostico.resultado_tecnico['remediations']
+        self.assertEqual(len(auditorias), 2)
+        self.assertEqual(auditorias[0]['executionId'], anterior['executionId'])
+        self.assertEqual(auditorias[1]['executionId'], self.payload()['executionId'])
+
+    def test_execution_id_duplicado_e_idempotente(self):
+        diagnostico = self.criar_diagnostico(self.usuario)
+        self.autenticar(self.usuario)
+
+        primeira = self.client.post(self.endpoint(diagnostico.id), self.payload(), format='json')
+        segunda = self.client.post(self.endpoint(diagnostico.id), self.payload(), format='json')
+
+        self.assertEqual(primeira.status_code, status.HTTP_201_CREATED, primeira.data)
+        self.assertEqual(segunda.status_code, status.HTTP_200_OK, segunda.data)
+        self.assertTrue(segunda.data['duplicate'])
+        diagnostico.refresh_from_db()
+        self.assertEqual(len(diagnostico.resultado_tecnico['remediations']), 1)
+
+    def test_payload_invalido_nao_altera_diagnostico(self):
+        diagnostico = self.criar_diagnostico(self.usuario)
+        self.autenticar(self.usuario)
+        payload = self.payload(verification={'status': 'verified', 'installed': True})
+
+        resposta = self.client.post(self.endpoint(diagnostico.id), payload, format='json')
+
+        self.assertEqual(resposta.status_code, status.HTTP_400_BAD_REQUEST)
+        self.assertIn('verification', resposta.data)
+        diagnostico.refresh_from_db()
+        self.assertEqual(diagnostico.resultado_tecnico['remediations'], [])
+
+    def test_acesso_sem_token_e_negado(self):
+        diagnostico = self.criar_diagnostico(self.usuario)
+        self.client.credentials()
+
+        resposta = self.client.post(self.endpoint(diagnostico.id), self.payload(), format='json')
+
+        self.assertEqual(resposta.status_code, status.HTTP_401_UNAUTHORIZED)
 
 
 class ClienteApiTests(APITestCase):
@@ -238,3 +590,308 @@ class ClienteApiTests(APITestCase):
         self.assertEqual(resposta.status_code, status.HTTP_404_NOT_FOUND)
         diagnostico_alheio.refresh_from_db()
         self.assertIsNone(diagnostico_alheio.cliente)
+
+
+class SettingsApiTests(APITestCase):
+    def setUp(self):
+        user_model = get_user_model()
+        self.usuario = user_model.objects.create_user(
+            username='configurador',
+            password='SenhaAtual!2026',
+            email='antes@example.com',
+        )
+        self.outro_usuario = user_model.objects.create_user(
+            username='outro-configurador',
+            password='SenhaAtual!2026',
+        )
+
+    def autenticar(self, usuario):
+        access_token = str(RefreshToken.for_user(usuario).access_token)
+        self.client.credentials(HTTP_AUTHORIZATION=f'Bearer {access_token}')
+
+    def test_me_exige_autenticacao(self):
+        self.assertEqual(self.client.get('/api/me/').status_code, status.HTTP_401_UNAUTHORIZED)
+        self.assertEqual(self.client.get('/api/empresas/').status_code, status.HTTP_401_UNAUTHORIZED)
+        self.assertEqual(
+            self.client.post('/api/me/password/', {}, format='json').status_code,
+            status.HTTP_401_UNAUTHORIZED,
+        )
+
+    def test_me_retorna_e_atualiza_apenas_usuario_autenticado(self):
+        self.autenticar(self.usuario)
+        resposta = self.client.patch('/api/me/', {
+            'first_name': 'José',
+            'last_name': 'Silva',
+            'email': 'jose@example.com',
+            'username': 'tentativa-de-troca',
+            'is_staff': True,
+        }, format='json')
+
+        self.assertEqual(resposta.status_code, status.HTTP_200_OK, resposta.data)
+        self.usuario.refresh_from_db()
+        self.assertEqual(self.usuario.first_name, 'José')
+        self.assertEqual(self.usuario.last_name, 'Silva')
+        self.assertEqual(self.usuario.email, 'jose@example.com')
+        self.assertEqual(self.usuario.username, 'configurador')
+        self.assertFalse(self.usuario.is_staff)
+        self.assertEqual(resposta.data['username'], 'configurador')
+
+    def test_troca_de_senha_valida_senha_atual_e_confirmacao(self):
+        self.autenticar(self.usuario)
+        senha_errada = self.client.post('/api/me/password/', {
+            'current_password': 'Incorreta!2026',
+            'new_password': 'NovaSenhaSegura!2026',
+            'confirm_new_password': 'NovaSenhaSegura!2026',
+        }, format='json')
+        confirmacao_errada = self.client.post('/api/me/password/', {
+            'current_password': 'SenhaAtual!2026',
+            'new_password': 'NovaSenhaSegura!2026',
+            'confirm_new_password': 'OutraSenha!2026',
+        }, format='json')
+
+        self.assertEqual(senha_errada.status_code, status.HTTP_400_BAD_REQUEST)
+        self.assertEqual(confirmacao_errada.status_code, status.HTTP_400_BAD_REQUEST)
+        self.assertTrue(self.usuario.check_password('SenhaAtual!2026'))
+
+    def test_troca_de_senha_usa_hash_do_django(self):
+        self.autenticar(self.usuario)
+        resposta = self.client.post('/api/me/password/', {
+            'current_password': 'SenhaAtual!2026',
+            'new_password': 'NovaSenhaSegura!2026',
+            'confirm_new_password': 'NovaSenhaSegura!2026',
+        }, format='json')
+
+        self.assertEqual(resposta.status_code, status.HTTP_200_OK, resposta.data)
+        self.usuario.refresh_from_db()
+        self.assertNotEqual(self.usuario.password, 'NovaSenhaSegura!2026')
+        self.assertEqual(self.client.get('/api/me/').status_code, status.HTTP_401_UNAUTHORIZED)
+        self.assertIsNone(authenticate(username='configurador', password='SenhaAtual!2026'))
+        self.assertEqual(authenticate(username='configurador', password='NovaSenhaSegura!2026'), self.usuario)
+
+    def test_empresa_e_criada_com_dono_do_request(self):
+        self.autenticar(self.usuario)
+        resposta = self.client.post('/api/empresas/', {
+            'nome': 'Assistência Real',
+            'cnpj': '12.345.678/0001-90',
+            'email': 'contato@example.com',
+            'telefone': '11999998888',
+            'endereco': 'Rua cadastrada, 10',
+            'usuario': self.outro_usuario.id,
+        }, format='json')
+
+        self.assertEqual(resposta.status_code, status.HTTP_201_CREATED, resposta.data)
+        empresa = Empresa.objects.get(pk=resposta.data['id'])
+        self.assertEqual(empresa.usuario, self.usuario)
+        self.assertEqual(resposta.data['usuario'], self.usuario.id)
+
+    def test_empresa_fica_isolada_entre_usuarios(self):
+        empresa_alheia = Empresa.objects.create(usuario=self.outro_usuario, nome='Outra assistência')
+        self.autenticar(self.usuario)
+
+        self.assertEqual(self.client.get('/api/empresas/').data, [])
+        self.assertEqual(
+            self.client.patch(f'/api/empresas/{empresa_alheia.id}/', {'nome': 'Ataque'}, format='json').status_code,
+            status.HTTP_404_NOT_FOUND,
+        )
+        empresa_alheia.refresh_from_db()
+        self.assertEqual(empresa_alheia.nome, 'Outra assistência')
+
+    def test_empresa_propria_pode_ser_editada(self):
+        empresa = Empresa.objects.create(usuario=self.usuario, nome='Nome anterior')
+        self.autenticar(self.usuario)
+
+        resposta = self.client.patch(
+            f'/api/empresas/{empresa.id}/',
+            {'nome': 'Nome atualizado', 'telefone': '11999990000'},
+            format='json',
+        )
+
+        self.assertEqual(resposta.status_code, status.HTTP_200_OK, resposta.data)
+        empresa.refresh_from_db()
+        self.assertEqual(empresa.nome, 'Nome atualizado')
+        self.assertEqual(empresa.telefone, '11999990000')
+
+    def test_empresa_valida_campos_e_impede_duplicidade_por_usuario(self):
+        self.autenticar(self.usuario)
+        invalida = self.client.post('/api/empresas/', {'nome': '', 'cnpj': '123'}, format='json')
+        primeira = self.client.post('/api/empresas/', {'nome': 'Assistência Real'}, format='json')
+        duplicada = self.client.post('/api/empresas/', {'nome': 'Outra'}, format='json')
+
+        self.assertEqual(invalida.status_code, status.HTTP_400_BAD_REQUEST)
+        self.assertEqual(primeira.status_code, status.HTTP_201_CREATED, primeira.data)
+        self.assertEqual(duplicada.status_code, status.HTTP_400_BAD_REQUEST)
+
+
+class SubscriptionApiTests(APITestCase):
+    def setUp(self):
+        user_model = get_user_model()
+        self.usuario = user_model.objects.create_user(username='assinante', password='SenhaSegura!2026')
+        self.outro_usuario = user_model.objects.create_user(username='outro-assinante', password='SenhaSegura!2026')
+
+    def autenticar(self, usuario):
+        access_token = str(RefreshToken.for_user(usuario).access_token)
+        self.client.credentials(HTTP_AUTHORIZATION=f'Bearer {access_token}')
+
+    def criar_plano(self, **overrides):
+        data = {
+            'nome': 'Plano cadastrado',
+            'slug': f'plano-{Plano.objects.count() + 1}',
+            'descricao': 'Descrição cadastrada no teste.',
+            'ativo': True,
+            'preco_mensal': None,
+            'moeda': '',
+            'max_usuarios': None,
+            'max_dispositivos': None,
+            'max_diagnosticos_mes': None,
+        }
+        data.update(overrides)
+        return Plano.objects.create(**data)
+
+    def criar_diagnostico(self, usuario, serial, finished_at):
+        return Diagnostico.objects.create(
+            usuario=usuario,
+            serial=serial,
+            modo='quick',
+            modulos=['system'],
+            iniciado_em=finished_at - timedelta(minutes=2),
+            finalizado_em=finished_at,
+            health_available=None,
+            resultado_tecnico={'mode': 'quick'},
+        )
+
+    def test_endpoints_exigem_autenticacao(self):
+        self.assertEqual(self.client.get('/api/planos/').status_code, status.HTTP_401_UNAUTHORIZED)
+        self.assertEqual(self.client.get('/api/assinatura/').status_code, status.HTTP_401_UNAUTHORIZED)
+        self.assertEqual(self.client.get('/api/licencas/').status_code, status.HTTP_401_UNAUTHORIZED)
+
+    def test_usuario_sem_assinatura_recebe_ausencia_explicita(self):
+        self.autenticar(self.usuario)
+        resposta = self.client.get('/api/assinatura/')
+
+        self.assertEqual(resposta.status_code, status.HTTP_200_OK)
+        self.assertIsNone(resposta.data['assinatura'])
+        self.assertIsNone(resposta.data['uso'])
+        self.assertFalse(resposta.data['capacidade_diagnostico']['allowed'])
+        self.assertEqual(resposta.data['capacidade_diagnostico']['code'], 'subscription_required')
+
+    def test_planos_disponiveis_retorna_somente_ativos(self):
+        ativo = self.criar_plano(nome='Plano ativo', slug='ativo')
+        self.criar_plano(nome='Plano inativo', slug='inativo', ativo=False)
+        self.autenticar(self.usuario)
+
+        resposta = self.client.get('/api/planos/')
+
+        self.assertEqual(resposta.status_code, status.HTTP_200_OK)
+        self.assertEqual([item['id'] for item in resposta.data], [ativo.id])
+        self.assertIsNone(resposta.data[0]['preco_mensal'])
+        self.assertIsNone(resposta.data[0]['max_usuarios'])
+        self.assertIsNone(resposta.data[0]['max_dispositivos'])
+        self.assertIsNone(resposta.data[0]['max_diagnosticos_mes'])
+
+    def test_assinatura_retorna_plano_status_e_datas_reais(self):
+        plano = self.criar_plano(
+            max_usuarios=3,
+            max_dispositivos=20,
+            max_diagnosticos_mes=100,
+            scanner_completo=True,
+            relatorios=True,
+        )
+        inicio = timezone.now()
+        fim = inicio + timedelta(days=30)
+        Licenca.objects.create(
+            usuario=self.usuario,
+            plano=plano,
+            status='active',
+            inicio=inicio,
+            fim=fim,
+            renovacao_automatica=True,
+        )
+        self.autenticar(self.usuario)
+
+        resposta = self.client.get('/api/assinatura/')
+
+        self.assertEqual(resposta.status_code, status.HTTP_200_OK)
+        self.assertEqual(resposta.data['assinatura']['plano']['id'], plano.id)
+        self.assertEqual(resposta.data['assinatura']['status'], 'active')
+        self.assertEqual(resposta.data['assinatura']['status_efetivo'], 'active')
+        self.assertTrue(resposta.data['assinatura']['valida'])
+        self.assertEqual(resposta.data['assinatura']['fim'], fim.isoformat().replace('+00:00', 'Z'))
+        self.assertTrue(resposta.data['assinatura']['renovacao_automatica'])
+        self.assertTrue(resposta.data['capacidade_diagnostico']['allowed'])
+        self.assertEqual(resposta.data['capacidade_diagnostico']['code'], 'diagnostic_allowed')
+
+    def test_assinatura_de_outro_usuario_nao_e_retornada(self):
+        plano = self.criar_plano()
+        assinatura_alheia = Licenca.objects.create(
+            usuario=self.outro_usuario,
+            plano=plano,
+            status='active',
+            fim=timezone.now() + timedelta(days=30),
+        )
+        self.autenticar(self.usuario)
+
+        resposta = self.client.get('/api/assinatura/')
+
+        self.assertIsNone(resposta.data['assinatura'])
+        self.assertEqual(self.client.get('/api/licencas/').data, [])
+        self.assertEqual(
+            self.client.get(f'/api/licencas/{assinatura_alheia.id}/').status_code,
+            status.HTTP_404_NOT_FOUND,
+        )
+
+    def test_status_suportados_e_validade(self):
+        plano = self.criar_plano()
+        user_model = get_user_model()
+        valid_statuses = {'trial': True, 'active': True, 'past_due': False, 'canceled': False, 'expired': False}
+
+        for index, (subscription_status, expected_validity) in enumerate(valid_statuses.items()):
+            usuario = user_model.objects.create_user(username=f'status-{index}', password='SenhaSegura!2026')
+            license_record = Licenca.objects.create(
+                usuario=usuario,
+                plano=plano,
+                status=subscription_status,
+                fim=timezone.now() + timedelta(days=10),
+            )
+            self.assertEqual(license_record.status_efetivo, subscription_status)
+            self.assertEqual(license_record.valida, expected_validity)
+
+        expired_by_date = Licenca.objects.create(
+            usuario=self.usuario,
+            plano=plano,
+            status='active',
+            fim=timezone.now() - timedelta(seconds=1),
+        )
+        self.assertEqual(expired_by_date.status_efetivo, 'expired')
+        self.assertFalse(expired_by_date.valida)
+
+    def test_uso_atual_conta_diagnosticos_do_mes_e_seriais_unicos(self):
+        plano = self.criar_plano(max_diagnosticos_mes=10, max_dispositivos=5)
+        Licenca.objects.create(
+            usuario=self.usuario,
+            plano=plano,
+            status='active',
+            fim=timezone.now() + timedelta(days=30),
+        )
+        now = timezone.now()
+        previous_month = now.replace(day=1, hour=0, minute=0, second=0, microsecond=0) - timedelta(days=1)
+        self.criar_diagnostico(self.usuario, 'SERIAL-1', now - timedelta(hours=2))
+        self.criar_diagnostico(self.usuario, 'SERIAL-1', now - timedelta(hours=1))
+        diagnostico_anterior = self.criar_diagnostico(self.usuario, 'SERIAL-2', previous_month)
+        Diagnostico.objects.filter(pk=diagnostico_anterior.pk).update(criado_em=previous_month)
+        self.criar_diagnostico(self.outro_usuario, 'SERIAL-OTHER', now)
+        self.autenticar(self.usuario)
+
+        resposta = self.client.get('/api/assinatura/')
+
+        self.assertEqual(resposta.data['uso']['diagnosticos_mes'], 2)
+        self.assertEqual(resposta.data['uso']['dispositivos_identificados'], 2)
+        self.assertIsNone(resposta.data['uso']['usuarios'])
+
+    def test_assinatura_e_somente_leitura_pela_api(self):
+        self.autenticar(self.usuario)
+        resposta = self.client.post('/api/licencas/', {'status': 'active'}, format='json')
+        self.assertEqual(resposta.status_code, status.HTTP_405_METHOD_NOT_ALLOWED)
+
+    def test_plano_e_assinatura_estao_registrados_no_admin(self):
+        self.assertTrue(admin.site.is_registered(Plano))
+        self.assertTrue(admin.site.is_registered(Licenca))

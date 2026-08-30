@@ -71,7 +71,23 @@ test('uninstall seguido de pacote ausente resulta em resolved', async () => {
   const result = await executor.execute({ serial: 'serial', packageName: 'com.example.app', confirmationToken: 'token-ok' })
   assert.equal(result.status, 'resolved')
   assert.equal(result.verification.installed, false)
+  assert.match(result.remediation.executionId, /^[0-9a-f-]{36}$/i)
   assert.ok(result.remediation.transitions.some((transition) => transition.status === 'verifying'))
+})
+
+test('cada execução recebe identificador único mesmo para o mesmo pacote', async () => {
+  const ids = ['11111111-1111-4111-8111-111111111111', '22222222-2222-4222-8222-222222222222']
+  const executor = criarExecutorRemediacao({
+    uninstall: async () => ({ ok: true }),
+    verify: async () => ({ status: 'verified', installed: false }),
+    createExecutionId: () => ids.shift(),
+  })
+
+  const primeira = await executor.execute({ serial: 'serial', packageName: 'com.example.app', confirmationToken: 'token-one' })
+  const segunda = await executor.execute({ serial: 'serial', packageName: 'com.example.app', confirmationToken: 'token-two' })
+
+  assert.equal(primeira.remediation.executionId, '11111111-1111-4111-8111-111111111111')
+  assert.equal(segunda.remediation.executionId, '22222222-2222-4222-8222-222222222222')
 })
 
 test('pacote ainda instalado após uninstall resulta em failed', async () => {

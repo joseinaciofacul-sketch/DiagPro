@@ -237,6 +237,16 @@ async function coletarMemoria(serial) {
   }
 }
 
+async function verificarAdb() {
+  const output = await runAdb(['version'])
+  const versionMatch = output.match(/Android Debug Bridge version\s+([^\r\n]+)/i)
+  return {
+    available: true,
+    version: versionMatch ? versionMatch[1].trim() : null,
+    executable: localizarAdb(),
+  }
+}
+
 function booleanoAndroid(valor) {
   if (valor === '1' || valor === 'true') return true
   if (valor === '0' || valor === 'false') return false
@@ -920,5 +930,6 @@ module.exports = {
   executarScan,
   listarAppsInstalados,
   obterPreviewRemocao,
+  verificarAdb,
   verificarEstado,
 }

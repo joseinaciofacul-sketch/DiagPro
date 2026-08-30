@@ -4,7 +4,9 @@ import {
   AppWindow,
   Battery,
   CheckCircle2,
+  ChevronRight,
   Clock3,
+  FileText,
   HardDrive,
   Info,
   Loader2,
@@ -19,9 +21,12 @@ import {
   X,
 } from 'lucide-react'
 import useDeviceStatus from '../hooks/useDeviceStatus.js'
+import { listarDiagnosticos } from '../services/diagnostics.js'
 import './DevicesPage.css'
 
 const EMPTY_VALUE = 'Não disponível'
+const MODE_LABELS = { quick: 'Rápida', complete: 'Completa', custom: 'Personalizada' }
+const REMEDIATION_STATUS = { resolved: 'Resolvido', failed: 'Falha', not_verified: 'Não verificado' }
 
 function getDiagproApi() {
   if (typeof window === 'undefined') return null
@@ -186,7 +191,44 @@ function DeviceField({ label, value }) {
   )
 }
 
-function DevicesPage({ scanResult = null, onStartDiagnostic, onOpenScanner }) {
+function normalizeDiagnosticList(data) {
+  if (Array.isArray(data)) return data
+  if (Array.isArray(data?.results)) return data.results
+  throw new Error('A API retornou um formato de diagnósticos inválido.')
+}
+
+function diagnosticTimestamp(diagnostic) {
+  const value = diagnostic?.finalizado_em ? new Date(diagnostic.finalizado_em).getTime() : Number.NaN
+  return Number.isNaN(value) ? -Infinity : value
+}
+
+function groupHistoricalDevices(diagnostics) {
+  const groups = new Map()
+  diagnostics.forEach((diagnostic) => {
+    const serial = typeof diagnostic?.serial === 'string' ? diagnostic.serial.trim() : ''
+    const key = serial ? `serial:${serial}` : `diagnostic:${diagnostic.id}`
+    if (!groups.has(key)) groups.set(key, { key, serial: serial || null, diagnostics: [] })
+    groups.get(key).diagnostics.push(diagnostic)
+  })
+  return [...groups.values()].map((group) => {
+    const entries = group.diagnostics.slice().sort((a, b) => diagnosticTimestamp(b) - diagnosticTimestamp(a))
+    return { ...group, diagnostics: entries, latest: entries[0] }
+  }).sort((a, b) => diagnosticTimestamp(b.latest) - diagnosticTimestamp(a.latest))
+}
+
+function technicalItems(diagnostic, field) {
+  const technicalResult = diagnostic?.resultado_tecnico
+  const items = field === 'findings' ? technicalResult?.security?.findings : technicalResult?.remediations
+  return Array.isArray(items) ? items : null
+}
+
+function formatDiagnosticDate(value) {
+  if (!value) return EMPTY_VALUE
+  const date = new Date(value)
+  return Number.isNaN(date.getTime()) ? EMPTY_VALUE : date.toLocaleString('pt-BR')
+}
+
+function DevicesPage({ accessToken, scanResult = null, onStartDiagnostic, onOpenScanner, onOpenReport }) {
   const dispositivo = useDeviceStatus()
   const [apps, setApps] = useState([])
   const [appsState, setAppsState] = useState({ status: 'idle', message: '' })
@@ -198,6 +240,9 @@ function DevicesPage({ scanResult = null, onStartDiagnostic, onOpenScanner }) {
   const [appFilter, setAppFilter] = useState('all')
   const [previewingPackage, setPreviewingPackage] = useState('')
   const [removing, setRemoving] = useState(false)
+  const [historicalDiagnostics, setHistoricalDiagnostics] = useState([])
+  const [historyState, setHistoryState] = useState({ status: 'loading', message: '' })
+  const [selectedHistoricalDevice, setSelectedHistoricalDevice] = useState(null)
 
   const isConnected = dispositivo?.status === 'connected' && Boolean(dispositivo?.serial)
   const serial = dispositivo?.serial || ''
@@ -217,6 +262,26 @@ function DevicesPage({ scanResult = null, onStartDiagnostic, onOpenScanner }) {
   const unknownApps = useMemo(() => filteredApps.filter((app) => app.type.kind === 'unknown'), [filteredApps])
   const userTotal = useMemo(() => normalisedApps.filter((app) => app.type.kind === 'user').length, [normalisedApps])
   const systemTotal = useMemo(() => normalisedApps.filter((app) => app.type.kind === 'system').length, [normalisedApps])
+  const historicalDevices = useMemo(() => groupHistoricalDevices(historicalDiagnostics), [historicalDiagnostics])
+
+  const loadHistoricalDiagnostics = useCallback(async () => {
+    setHistoryState({ status: 'loading', message: '' })
+    try {
+      const data = normalizeDiagnosticList(await listarDiagnosticos({ accessToken }))
+      setHistoricalDiagnostics(data)
+      setHistoryState({ status: 'ready', message: '' })
+    } catch (error) {
+      setHistoricalDiagnostics([])
+      setHistoryState({
+        status: error?.status === 401 ? 'auth-error' : 'error',
+        message: error?.status === 401
+          ? 'Sua sessão expirou. Entre novamente para consultar o histórico.'
+          : 'Não foi possível carregar os dispositivos já diagnosticados.',
+      })
+    }
+  }, [accessToken])
+
+  useEffect(() => { loadHistoricalDiagnostics() }, [loadHistoricalDiagnostics])
 
   useEffect(() => {
     let active = true
@@ -404,6 +469,9 @@ function DevicesPage({ scanResult = null, onStartDiagnostic, onOpenScanner }) {
   const hasRecognisedScanData = Boolean(
     storageUsed || storageTotal || storageFree || memoryAvailable || memoryTotal || hasValue(scanData?.totalApps),
   )
+  const selectedLatestDiagnostic = selectedHistoricalDevice?.latest || null
+  const selectedLatestFindings = technicalItems(selectedLatestDiagnostic, 'findings')
+  const selectedLatestRemediations = technicalItems(selectedLatestDiagnostic, 'remediations')
 
   return (
     <div className="dp-devices-page">
@@ -539,14 +607,11 @@ function DevicesPage({ scanResult = null, onStartDiagnostic, onOpenScanner }) {
         </section>
 
         <section className="dp-card dp-devices-history-card" aria-labelledby="history-title">
-          <div className="dp-card-title" id="history-title">HISTÓRICO DE DISPOSITIVOS</div>
-          <div className="dp-devices-empty">
-            <Clock3 size={28} />
-            <div>
-              <strong>Nenhum histórico disponível</strong>
-              <p>O histórico depende da persistência no backend, que ainda não está disponível nesta tela.</p>
-            </div>
-          </div>
+          <div className="dp-devices-section-header"><div><div className="dp-card-title" id="history-title">DISPOSITIVOS JÁ DIAGNOSTICADOS</div><p className="dp-devices-section-description">Registros históricos; não representam conexão atual.</p></div><button className="dp-devices-icon-action" type="button" onClick={loadHistoricalDiagnostics} disabled={historyState.status === 'loading'} aria-label="Atualizar histórico"><RefreshCw size={16} className={historyState.status === 'loading' ? 'spin' : ''} /></button></div>
+          {historyState.status === 'loading' && <div className="dp-devices-history-state"><Loader2 size={20} className="spin" /> Carregando histórico...</div>}
+          {(historyState.status === 'error' || historyState.status === 'auth-error') && <div className="dp-devices-history-state error"><AlertTriangle size={19} /><span>{historyState.message}</span><button type="button" onClick={loadHistoricalDiagnostics}>Tentar novamente</button></div>}
+          {historyState.status === 'ready' && historicalDevices.length === 0 && <div className="dp-devices-empty"><Clock3 size={28} /><div><strong>Nenhum dispositivo histórico</strong><p>Nenhum diagnóstico persistido possui identificação de dispositivo para exibição.</p></div></div>}
+          {historyState.status === 'ready' && historicalDevices.length > 0 && <div className="dp-devices-history-list">{historicalDevices.map((device) => <button type="button" key={device.key} onClick={() => setSelectedHistoricalDevice(device)}><Smartphone size={18} /><div><strong>{[device.latest?.fabricante, device.latest?.modelo].filter(Boolean).join(' ') || 'Identificação não disponível'}</strong>{device.serial ? <code>{device.serial}</code> : <span>Sem serial registrado</span>}{device.latest?.versao_android && <small>Android {device.latest.versao_android}</small>}{device.latest?.cliente?.nome && <small>Cliente: {device.latest.cliente.nome}</small>}<small>Histórico · {device.diagnostics.length} diagnóstico{device.diagnostics.length === 1 ? '' : 's'} · último em {formatDiagnosticDate(device.latest?.finalizado_em)}</small></div><ChevronRight size={16} /></button>)}</div>}
         </section>
       </div>
 
@@ -695,6 +760,22 @@ function DevicesPage({ scanResult = null, onStartDiagnostic, onOpenScanner }) {
           </>
         )}
       </section>
+
+      {selectedHistoricalDevice && selectedLatestDiagnostic && (
+        <div className="dp-devices-modal-backdrop" onMouseDown={(event) => { if (event.target === event.currentTarget) setSelectedHistoricalDevice(null) }}>
+          <section className="dp-devices-history-modal" role="dialog" aria-modal="true" aria-labelledby="historical-device-title">
+            <header className="dp-devices-modal-header"><div className="dp-devices-detail-modal-icon"><Smartphone size={20} /></div><div><h2 id="historical-device-title">{[selectedLatestDiagnostic.fabricante, selectedLatestDiagnostic.modelo].filter(Boolean).join(' ') || 'Dispositivo histórico'}</h2><p>Registro de diagnósticos persistidos — não indica conexão atual.</p></div><button type="button" onClick={() => setSelectedHistoricalDevice(null)} aria-label="Fechar"><X size={18} /></button></header>
+            <div className="dp-devices-history-modal-content">
+              <section><div className="dp-card-title">IDENTIFICAÇÃO CONHECIDA</div><div className="dp-devices-history-fields">{selectedHistoricalDevice.serial && <DeviceField label="Serial" value={selectedHistoricalDevice.serial} />}{selectedLatestDiagnostic.fabricante && <DeviceField label="Fabricante" value={selectedLatestDiagnostic.fabricante} />}{selectedLatestDiagnostic.modelo && <DeviceField label="Modelo" value={selectedLatestDiagnostic.modelo} />}{selectedLatestDiagnostic.versao_android && <DeviceField label="Android" value={selectedLatestDiagnostic.versao_android} />}{selectedLatestDiagnostic.sdk != null && <DeviceField label="SDK" value={selectedLatestDiagnostic.sdk} />}{selectedLatestDiagnostic.security_patch && <DeviceField label="Security patch" value={selectedLatestDiagnostic.security_patch} />}</div></section>
+              <section><div className="dp-card-title">ÚLTIMO DIAGNÓSTICO</div><div className="dp-devices-history-summary"><div><span>Diagnóstico</span><strong>#{selectedLatestDiagnostic.id}</strong></div><div><span>Data</span><strong>{formatDiagnosticDate(selectedLatestDiagnostic.finalizado_em)}</strong></div><div><span>Cliente</span><strong>{selectedLatestDiagnostic.cliente?.nome || 'Não associado'}</strong></div><div><span>Modo</span><strong>{MODE_LABELS[selectedLatestDiagnostic.modo] || readableValue(selectedLatestDiagnostic.modo)}</strong></div><div><span>Findings</span><strong>{selectedLatestFindings ? selectedLatestFindings.length : EMPTY_VALUE}</strong></div><div><span>Correções</span><strong>{selectedLatestRemediations ? selectedLatestRemediations.length : EMPTY_VALUE}</strong></div></div></section>
+              <section><div className="dp-card-title">HISTÓRICO DE DIAGNÓSTICOS</div><div className="dp-devices-diagnostic-history">{selectedHistoricalDevice.diagnostics.map((diagnostic) => <article key={diagnostic.id}><Clock3 size={15} /><div><strong>Diagnóstico #{diagnostic.id}</strong><span>{formatDiagnosticDate(diagnostic.finalizado_em)} · {MODE_LABELS[diagnostic.modo] || readableValue(diagnostic.modo)}</span>{diagnostic.cliente?.nome && <small>Cliente: {diagnostic.cliente.nome}</small>}</div><button type="button" onClick={() => onOpenReport?.(diagnostic.id)}><FileText size={13} /> Ver relatório</button></article>)}</div></section>
+              <section><div className="dp-card-title">FINDINGS DO ÚLTIMO DIAGNÓSTICO</div>{selectedLatestFindings === null ? <p className="dp-devices-history-empty">Dados de findings não disponíveis neste diagnóstico.</p> : selectedLatestFindings.length > 0 ? <div className="dp-devices-technical-list">{selectedLatestFindings.map((finding, index) => <div key={`${finding?.id || 'finding'}-${index}`}><ShieldAlert size={14} /><span><strong>{finding?.title || 'Finding sem título registrado'}</strong>{finding?.packageName && <code>{finding.packageName}</code>}</span>{finding?.severity && <small>{finding.severity}</small>}</div>)}</div> : <p className="dp-devices-history-empty">Nenhum finding registrado no último diagnóstico.</p>}</section>
+              <section><div className="dp-card-title">CORREÇÕES DO ÚLTIMO DIAGNÓSTICO</div>{selectedLatestRemediations === null ? <p className="dp-devices-history-empty">Dados de correções não disponíveis neste diagnóstico.</p> : selectedLatestRemediations.length > 0 ? <div className="dp-devices-technical-list">{selectedLatestRemediations.map((remediation, index) => <div key={remediation?.executionId || `${remediation?.findingId || 'remediation'}-${index}`}><CheckCircle2 size={14} /><span><strong>{remediation?.action || 'Ação sem identificação registrada'}</strong>{remediation?.packageName && <code>{remediation.packageName}</code>}</span><small>{REMEDIATION_STATUS[remediation?.status] || readableValue(remediation?.status)}</small></div>)}</div> : <p className="dp-devices-history-empty">Nenhuma correção registrada no último diagnóstico.</p>}</section>
+            </div>
+            <footer className="dp-devices-history-modal-actions"><button className="dp-devices-secondary-btn" type="button" onClick={() => { setSelectedHistoricalDevice(null); onOpenScanner?.() }}><AppWindow size={14} /> Iniciar novo diagnóstico</button><button className="dp-primary-btn" type="button" onClick={() => onOpenReport?.(selectedLatestDiagnostic.id)}><FileText size={14} /> Ver relatório</button></footer>
+          </section>
+        </div>
+      )}
 
       {detailApp && (
         <div className="dp-devices-modal-backdrop" onMouseDown={(event) => {

@@ -7,6 +7,7 @@ const {
   executarScan,
   listarAppsInstalados,
   obterPreviewRemocao,
+  verificarAdb,
 } = require('./deviceDetector')
 
 let mainWindow
@@ -65,6 +66,23 @@ async function monitorarDispositivo() {
 }
 
 ipcMain.handle('get-device-status', () => monitorarDispositivo())
+
+ipcMain.handle('check-adb', async () => {
+  try {
+    const [adb, device] = await Promise.all([verificarAdb(), monitorarDispositivo()])
+    return { ok: true, data: { adb, device } }
+  } catch (err) {
+    const messages = {
+      ADB_NOT_FOUND: 'O ADB não foi localizado neste computador.',
+      ADB_TIMEOUT: 'O ADB demorou para responder.',
+    }
+    return {
+      ok: false,
+      code: err.codigo || 'ADB_UNAVAILABLE',
+      message: messages[err.codigo] || 'Não foi possível executar o ADB neste computador.',
+    }
+  }
+})
 
 ipcMain.handle('run-diagnostic', async (_event, { serial } = {}) => {
   try {

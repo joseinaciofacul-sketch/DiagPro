@@ -1,0 +1,76 @@
+.dp-settings-page { max-width: 1180px; color: #e2e8f0; }
+.dp-settings-heading { margin-bottom: 20px; }
+.dp-settings-heading h1 { margin: 0 0 5px; color: #fff; font-size: 26px; }
+.dp-settings-heading p { margin: 0; color: #94a3b8; font-size: 14px; }
+.dp-settings-layout { display: grid; grid-template-columns: 230px minmax(0, 1fr); gap: 15px; align-items: start; }
+.dp-settings-tabs { display: flex; flex-direction: column; gap: 4px; border: 1px solid #1e293b; border-radius: 12px; padding: 8px; background: #111827; }
+.dp-settings-tabs button { display: flex; width: 100%; align-items: center; gap: 9px; border: 0; border-radius: 8px; padding: 10px 11px; background: transparent; color: #94a3b8; cursor: pointer; font: inherit; font-size: 11px; font-weight: 600; text-align: left; }
+.dp-settings-tabs button:hover { background: #172033; color: #cbd5e1; }
+.dp-settings-tabs button.active { background: #172554; color: #93c5fd; }
+.dp-settings-content { min-width: 0; }
+.dp-settings-panel { overflow: hidden; border: 1px solid #1e293b; border-radius: 12px; background: #111827; }
+.dp-settings-panel > header { display: flex; align-items: center; gap: 11px; padding: 17px 19px; border-bottom: 1px solid #1e293b; }
+.dp-settings-section-icon { display: grid; width: 38px; height: 38px; flex: 0 0 auto; place-items: center; border-radius: 9px; background: #172554; color: #60a5fa; }
+.dp-settings-panel > header h2 { margin: 0 0 3px; color: #f8fafc; font-size: 15px; }
+.dp-settings-panel > header p { margin: 0; color: #64748b; font-size: 11px; line-height: 1.4; }
+.dp-settings-panel form { padding: 18px 19px 0; }
+.dp-settings-form-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 14px; }
+.dp-settings-form-grid.single { grid-template-columns: 1fr; }
+.dp-settings-field { display: flex; min-width: 0; flex-direction: column; gap: 6px; color: #94a3b8; font-size: 10px; font-weight: 700; }
+.dp-settings-field input { width: 100%; box-sizing: border-box; border: 1px solid #263248; border-radius: 8px; outline: 0; padding: 9px 10px; background: #0d1422; color: #e2e8f0; font: inherit; font-size: 12px; font-weight: 400; }
+.dp-settings-field input:focus { border-color: #2563eb; box-shadow: 0 0 0 2px rgba(37, 99, 235, .15); }
+.dp-settings-field input[readonly] { cursor: default; color: #64748b; }
+.dp-settings-field small { color: #64748b; font-size: 9px; font-weight: 400; line-height: 1.4; }
+.dp-settings-actions { display: flex; justify-content: flex-end; margin-top: 18px; padding: 14px 0 17px; border-top: 1px solid #1e293b; }
+.dp-settings-actions button, .dp-settings-page-state button, .dp-settings-session button { display: inline-flex; align-items: center; justify-content: center; gap: 7px; border-radius: 8px; padding: 8px 11px; cursor: pointer; font: inherit; font-size: 10px; font-weight: 700; }
+.dp-settings-actions button.primary { border: 1px solid #2563eb; background: #1d4ed8; color: #fff; }
+.dp-settings-actions button.primary:hover:not(:disabled) { background: #2563eb; }
+.dp-settings-actions button:disabled { cursor: wait; opacity: .65; }
+.dp-settings-feedback { display: flex; align-items: center; gap: 7px; margin-top: 14px; border: 1px solid; border-radius: 8px; padding: 9px 10px; font-size: 10px; line-height: 1.4; }
+.dp-settings-feedback.success { border-color: #065f46; background: #08261f; color: #6ee7b7; }
+.dp-settings-feedback.error { border-color: #7f1d1d; background: #2b1117; color: #fca5a5; }
+.dp-settings-info { display: flex; align-items: flex-start; gap: 8px; margin: 15px 19px 0; border: 1px solid #1e3a5f; border-radius: 8px; padding: 10px 11px; background: #0d1b2f; color: #94a3b8; font-size: 10px; line-height: 1.45; }
+.dp-settings-panel form .dp-settings-info { margin-right: 0; margin-left: 0; }
+.dp-settings-info svg { flex: 0 0 auto; color: #60a5fa; }
+.dp-settings-info.warning { border-color: #713f12; background: #251b0c; color: #fcd34d; }
+.dp-settings-mode-list { display: grid; gap: 9px; padding: 18px 19px 0; }
+.dp-settings-mode-list label { display: flex; align-items: center; gap: 11px; border: 1px solid #263248; border-radius: 9px; padding: 11px 12px; background: #0d1422; cursor: pointer; }
+.dp-settings-mode-list label:hover { border-color: #334c70; }
+.dp-settings-mode-list label.selected { border-color: #2563eb; background: #10213d; }
+.dp-settings-mode-list input { accent-color: #3b82f6; }
+.dp-settings-mode-list span { display: flex; flex-direction: column; gap: 3px; }
+.dp-settings-mode-list strong { color: #e2e8f0; font-size: 11px; }
+.dp-settings-mode-list small { color: #64748b; font-size: 9px; }
+.dp-settings-panel > .dp-settings-actions, .dp-settings-panel > .dp-settings-feedback { margin-right: 19px; margin-left: 19px; }
+.dp-settings-empty { display: flex; min-height: 200px; flex-direction: column; align-items: center; justify-content: center; padding: 28px 20px; color: #64748b; text-align: center; }
+.dp-settings-empty > svg { margin-bottom: 10px; color: #475569; }
+.dp-settings-empty strong { color: #cbd5e1; font-size: 13px; }
+.dp-settings-empty p { max-width: 480px; margin: 6px 0 0; font-size: 10px; line-height: 1.5; }
+.dp-settings-empty.error > svg { color: #f87171; }
+.dp-settings-adb-result { padding: 18px 19px 0; }
+.dp-settings-status-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 1px; overflow: hidden; border: 1px solid #243145; border-radius: 9px; background: #243145; }
+.dp-settings-status-grid > div { min-width: 0; padding: 11px 12px; background: #0d1422; }
+.dp-settings-status-grid span, .dp-settings-status-grid strong, .dp-settings-status-grid code { display: block; }
+.dp-settings-status-grid span { margin-bottom: 5px; color: #64748b; font-size: 9px; font-weight: 700; text-transform: uppercase; }
+.dp-settings-status-grid strong, .dp-settings-status-grid code { overflow-wrap: anywhere; color: #cbd5e1; font-size: 11px; }
+.dp-settings-device { display: flex; align-items: center; gap: 12px; margin-top: 13px; border: 1px solid #1d4ed8; border-radius: 9px; padding: 12px; background: #0f1d3a; }
+.dp-settings-device > svg { flex: 0 0 auto; color: #60a5fa; }
+.dp-settings-device strong, .dp-settings-device code, .dp-settings-device span { display: block; }
+.dp-settings-device strong { color: #e2e8f0; font-size: 12px; }
+.dp-settings-device code, .dp-settings-device span { margin-top: 3px; color: #94a3b8; font-size: 9px; }
+.dp-settings-session { display: flex; align-items: center; justify-content: space-between; gap: 16px; margin: 0 19px 18px; border-top: 1px solid #1e293b; padding-top: 17px; }
+.dp-settings-session > div { display: flex; align-items: center; gap: 9px; color: #94a3b8; }
+.dp-settings-session strong, .dp-settings-session small { display: block; }
+.dp-settings-session strong { color: #cbd5e1; font-size: 11px; }
+.dp-settings-session small { margin-top: 3px; color: #64748b; font-size: 9px; }
+.dp-settings-session button { border: 1px solid #7f1d1d; background: #2b1117; color: #fca5a5; }
+.dp-settings-session button:hover { background: #7f1d1d; color: #fff; }
+.dp-settings-page-state { display: flex; min-height: 340px; flex-direction: column; align-items: center; justify-content: center; border: 1px solid #1e293b; border-radius: 12px; padding: 35px 20px; background: #111827; color: #64748b; text-align: center; }
+.dp-settings-page-state > svg { margin-bottom: 11px; color: #475569; }
+.dp-settings-page-state strong { color: #cbd5e1; font-size: 15px; }
+.dp-settings-page-state p { max-width: 480px; margin: 6px 0 14px; font-size: 11px; line-height: 1.5; }
+.dp-settings-page-state.error { border-color: #7f1d1d; }
+.dp-settings-page-state.error > svg { color: #f87171; }
+.dp-settings-page-state button { border: 1px solid #334155; background: #172033; color: #bfdbfe; }
+@media (max-width: 850px) { .dp-settings-layout { grid-template-columns: 1fr; } .dp-settings-tabs { flex-direction: row; overflow-x: auto; } .dp-settings-tabs button { width: auto; flex: 0 0 auto; white-space: nowrap; } }
+@media (max-width: 600px) { .dp-settings-form-grid, .dp-settings-status-grid { grid-template-columns: 1fr; } .dp-settings-session { align-items: flex-start; flex-direction: column; } }

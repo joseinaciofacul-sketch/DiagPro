@@ -512,6 +512,46 @@
 
 .dp-devices-danger-btn:hover:not(:disabled) { background: #ef4444; }
 
+.dp-devices-history-state { display: flex; min-height: 95px; align-items: center; justify-content: center; gap: 8px; margin-top: 14px; color: #94a3b8; font-size: 11px; text-align: center; }
+.dp-devices-history-state.error { align-items: stretch; flex-direction: column; color: #fca5a5; }
+.dp-devices-history-state.error button { align-self: center; padding: 6px 9px; border: 1px solid #334155; border-radius: 6px; background: #172033; color: #dbeafe; font: inherit; font-size: 9px; cursor: pointer; }
+.dp-devices-history-list { max-height: 250px; margin-top: 14px; overflow-y: auto; border: 1px solid #243145; border-radius: 9px; }
+.dp-devices-history-list > button { display: grid; width: 100%; grid-template-columns: 20px minmax(0, 1fr) 16px; align-items: center; gap: 8px; padding: 9px 10px; border: 0; border-bottom: 1px solid #243145; background: #0d1422; color: inherit; text-align: left; font: inherit; cursor: pointer; }
+.dp-devices-history-list > button:last-child { border-bottom: 0; }
+.dp-devices-history-list > button:hover { background: #101b2d; }
+.dp-devices-history-list > button > svg:first-child { color: #60a5fa; }
+.dp-devices-history-list > button > svg:last-child { color: #475569; }
+.dp-devices-history-list strong, .dp-devices-history-list code, .dp-devices-history-list span, .dp-devices-history-list small { display: block; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.dp-devices-history-list strong { color: #cbd5e1; font-size: 10px; }
+.dp-devices-history-list code, .dp-devices-history-list span, .dp-devices-history-list small { margin-top: 3px; color: #64748b; font-size: 8px; }
+.dp-devices-history-modal { display: flex; width: min(100%, 820px); max-height: min(92vh, 820px); flex-direction: column; overflow: hidden; border: 1px solid #334155; border-radius: 14px; background: #111b2b; box-shadow: 0 24px 70px rgba(0, 0, 0, .5); }
+.dp-devices-history-modal-content { overflow-y: auto; padding: 15px 18px 18px; }
+.dp-devices-history-modal-content > section { margin-bottom: 16px; }
+.dp-devices-history-modal-content > section:last-child { margin-bottom: 0; }
+.dp-devices-history-modal-content .dp-card-title { margin-bottom: 8px; }
+.dp-devices-history-fields, .dp-devices-history-summary { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 1px; overflow: hidden; border: 1px solid #243145; border-radius: 9px; background: #243145; }
+.dp-devices-history-summary > div { min-width: 0; padding: 9px 10px; background: #0d1422; }
+.dp-devices-history-summary span, .dp-devices-history-summary strong { display: block; }
+.dp-devices-history-summary span { margin-bottom: 4px; color: #64748b; font-size: 8px; font-weight: 800; text-transform: uppercase; }
+.dp-devices-history-summary strong { color: #cbd5e1; font-size: 10px; overflow-wrap: anywhere; }
+.dp-devices-diagnostic-history, .dp-devices-technical-list { overflow: hidden; border: 1px solid #243145; border-radius: 9px; }
+.dp-devices-diagnostic-history > article { display: grid; grid-template-columns: 18px minmax(0, 1fr) auto; align-items: center; gap: 8px; padding: 8px 9px; border-bottom: 1px solid #243145; background: #0d1422; }
+.dp-devices-diagnostic-history > article:last-child, .dp-devices-technical-list > div:last-child { border-bottom: 0; }
+.dp-devices-diagnostic-history > article > svg { color: #60a5fa; }
+.dp-devices-diagnostic-history strong, .dp-devices-diagnostic-history span, .dp-devices-diagnostic-history small { display: block; }
+.dp-devices-diagnostic-history strong { color: #cbd5e1; font-size: 10px; }
+.dp-devices-diagnostic-history span, .dp-devices-diagnostic-history small { margin-top: 3px; color: #64748b; font-size: 8px; }
+.dp-devices-diagnostic-history button { display: inline-flex; align-items: center; gap: 5px; padding: 6px 8px; border: 1px solid #2563eb; border-radius: 6px; background: #172554; color: #bfdbfe; font: inherit; font-size: 8px; font-weight: 700; cursor: pointer; }
+.dp-devices-technical-list > div { display: grid; grid-template-columns: 18px minmax(0, 1fr) auto; align-items: center; gap: 8px; padding: 8px 9px; border-bottom: 1px solid #243145; background: #0d1422; }
+.dp-devices-technical-list > div > svg { color: #60a5fa; }
+.dp-devices-technical-list span, .dp-devices-technical-list strong, .dp-devices-technical-list code, .dp-devices-technical-list small { display: block; }
+.dp-devices-technical-list strong { color: #cbd5e1; font-size: 10px; }
+.dp-devices-technical-list code { margin-top: 3px; color: #64748b; font-size: 8px; overflow-wrap: anywhere; }
+.dp-devices-technical-list small { color: #94a3b8; font-size: 8px; }
+.dp-devices-history-empty { margin: 0; padding: 10px; border: 1px dashed #334155; border-radius: 8px; color: #64748b; font-size: 9px; }
+.dp-devices-history-modal-actions { display: flex; justify-content: flex-end; gap: 8px; padding: 13px 18px 16px; border-top: 1px solid #263449; }
+.dp-devices-history-modal-actions .dp-primary-btn { display: inline-flex; align-items: center; gap: 6px; }
+
 @media (max-width: 1120px) {
   .dp-devices-device-detail { grid-template-columns: auto minmax(220px, 1fr); }
   .dp-devices-fields { grid-column: 1 / -1; }
@@ -531,6 +571,8 @@
   .dp-devices-app-toolbar { align-items: stretch; flex-direction: column; }
   .dp-devices-modal-details { grid-template-columns: 1fr; }
   .dp-devices-basic-details > div:nth-child(2) { grid-column: auto; }
+  .dp-devices-history-fields,
+  .dp-devices-history-summary { grid-template-columns: repeat(2, minmax(0, 1fr)); }
 }
 
 @media (max-width: 480px) {
@@ -538,4 +580,9 @@
   .dp-devices-scan-metrics { grid-template-columns: 1fr; }
   .dp-devices-modal-actions { flex-direction: column-reverse; }
   .dp-devices-modal-actions > button { width: 100%; }
+  .dp-devices-history-fields,
+  .dp-devices-history-summary { grid-template-columns: 1fr; }
+  .dp-devices-diagnostic-history > article { grid-template-columns: 18px 1fr; }
+  .dp-devices-diagnostic-history button { grid-column: 2; justify-self: start; }
+  .dp-devices-history-modal-actions { align-items: stretch; flex-direction: column; }
 }

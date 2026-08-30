@@ -1,11 +1,64 @@
 from rest_framework import serializers
-from .models import Empresa, Cliente, Dispositivo, Analise, Relatorio, Licenca, Diagnostico
+from django.contrib.auth import password_validation
+from django.contrib.auth import get_user_model
+from .models import Empresa, Cliente, Dispositivo, Analise, Relatorio, Plano, Licenca, Diagnostico
 
 
 class EmpresaSerializer(serializers.ModelSerializer):
+    usuario = serializers.PrimaryKeyRelatedField(read_only=True)
+
     class Meta:
         model = Empresa
-        fields = '__all__'
+        fields = ['id', 'usuario', 'nome', 'cnpj', 'email', 'telefone', 'endereco', 'data_cadastro']
+        read_only_fields = ['id', 'usuario', 'data_cadastro']
+        extra_kwargs = {'nome': {'required': True, 'allow_blank': False}}
+
+    def validate_cnpj(self, value):
+        if not value:
+            return None
+        import re
+
+        if len(re.sub(r'\D', '', value)) != 14 or not re.fullmatch(r'[0-9./-]+', value):
+            raise serializers.ValidationError('Informe um CNPJ com 14 dígitos.')
+        return value
+
+    def validate(self, attrs):
+        attrs = super().validate(attrs)
+        request = self.context.get('request')
+        if self.instance is None and request and Empresa.objects.filter(usuario=request.user).exists():
+            raise serializers.ValidationError('Este usuário já possui uma assistência configurada.')
+        return attrs
+
+
+class CurrentUserSerializer(serializers.ModelSerializer):
+    class Meta:
+        model = get_user_model()
+        fields = ['id', 'username', 'first_name', 'last_name', 'email', 'is_staff']
+        read_only_fields = ['id', 'username', 'is_staff']
+
+
+class ChangePasswordSerializer(serializers.Serializer):
+    current_password = serializers.CharField(write_only=True, trim_whitespace=False)
+    new_password = serializers.CharField(write_only=True, trim_whitespace=False)
+    confirm_new_password = serializers.CharField(write_only=True, trim_whitespace=False)
+
+    def validate_current_password(self, value):
+        if not self.context['request'].user.check_password(value):
+            raise serializers.ValidationError('A senha atual está incorreta.')
+        return value
+
+    def validate(self, attrs):
+        attrs = super().validate(attrs)
+        if attrs['new_password'] != attrs['confirm_new_password']:
+            raise serializers.ValidationError({'confirm_new_password': 'A confirmação não corresponde à nova senha.'})
+        password_validation.validate_password(attrs['new_password'], self.context['request'].user)
+        return attrs
+
+    def save(self, **kwargs):
+        user = self.context['request'].user
+        user.set_password(self.validated_data['new_password'])
+        user.save(update_fields=['password'])
+        return user
 
 
 class ClienteResumoSerializer(serializers.ModelSerializer):
@@ -79,10 +132,112 @@ class RelatorioSerializer(serializers.ModelSerializer):
         fields = '__all__'
 
 
+class PlanoSerializer(serializers.ModelSerializer):
+    class Meta:
+        model = Plano
+        fields = [
+            'id', 'nome', 'slug', 'descricao', 'preco_mensal', 'moeda',
+            'max_usuarios', 'max_dispositivos', 'max_diagnosticos_mes',
+            'scanner_completo', 'remediacao', 'relatorios', 'visao_gerencial',
+        ]
+
+
 class LicencaSerializer(serializers.ModelSerializer):
+    plano = PlanoSerializer(read_only=True)
+    status_efetivo = serializers.CharField(read_only=True)
+    valida = serializers.BooleanField(read_only=True)
+
     class Meta:
         model = Licenca
-        fields = '__all__'
+        fields = [
+            'id', 'plano', 'status', 'status_efetivo', 'valida', 'inicio', 'fim',
+            'renovacao_automatica', 'atualizado_em',
+        ]
+        read_only_fields = fields
+
+
+class RemediationTransitionSerializer(serializers.Serializer):
+    status = serializers.ChoiceField(
+        choices=['executing', 'verifying', 'resolved', 'failed', 'not_verified'],
+    )
+    at = serializers.DateTimeField()
+
+
+class RemediationVerificationSerializer(serializers.Serializer):
+    status = serializers.ChoiceField(choices=['verified', 'not_verified'])
+    installed = serializers.BooleanField(allow_null=True)
+    source = serializers.CharField(required=False, allow_blank=False, max_length=80)
+    user = serializers.IntegerField(required=False, min_value=0)
+
+
+class RemediationAuditSerializer(serializers.Serializer):
+    executionId = serializers.UUIDField()
+    findingId = serializers.CharField(max_length=300)
+    action = serializers.ChoiceField(choices=['uninstall_user_app'])
+    packageName = serializers.RegexField(
+        regex=r'^[A-Za-z][A-Za-z0-9_.-]{1,254}$',
+        max_length=255,
+    )
+    startedAt = serializers.DateTimeField()
+    finishedAt = serializers.DateTimeField()
+    status = serializers.ChoiceField(choices=['resolved', 'failed', 'not_verified'])
+    transitions = RemediationTransitionSerializer(many=True, allow_empty=False)
+    verification = RemediationVerificationSerializer()
+
+    def validate(self, attrs):
+        if '.' not in attrs['packageName']:
+            raise serializers.ValidationError({'packageName': 'Package name inválido.'})
+        if attrs['finishedAt'] < attrs['startedAt']:
+            raise serializers.ValidationError({'finishedAt': 'O término não pode ser anterior ao início.'})
+
+        transitions = attrs['transitions']
+        if transitions[0]['status'] != 'executing':
+            raise serializers.ValidationError({'transitions': 'A primeira transição deve ser executing.'})
+        if transitions[-1]['status'] != attrs['status']:
+            raise serializers.ValidationError({'transitions': 'A transição final deve coincidir com o resultado.'})
+        transition_times = [item['at'] for item in transitions]
+        if transition_times != sorted(transition_times):
+            raise serializers.ValidationError({'transitions': 'As transições devem estar em ordem cronológica.'})
+        if transition_times[0] < attrs['startedAt'] or transition_times[-1] > attrs['finishedAt']:
+            raise serializers.ValidationError({'transitions': 'As transições devem estar dentro do período da execução.'})
+
+        verification = attrs['verification']
+        if attrs['status'] == 'resolved' and not (
+            verification['status'] == 'verified' and verification['installed'] is False
+        ):
+            raise serializers.ValidationError({'verification': 'Resolved exige ausência verificada do pacote.'})
+        if attrs['status'] == 'not_verified' and verification['status'] != 'not_verified':
+            raise serializers.ValidationError({'verification': 'not_verified exige verificação indisponível.'})
+        if verification['status'] == 'verified' and verification['installed'] is None:
+            raise serializers.ValidationError({'verification': 'Verificação concluída exige o estado installed.'})
+
+        diagnostico = self.context.get('diagnostico')
+        resultado = diagnostico.resultado_tecnico if diagnostico else {}
+        security = resultado.get('security') if isinstance(resultado, dict) else None
+        findings = security.get('findings', []) if isinstance(security, dict) else []
+        actions = security.get('remediationActions', []) if isinstance(security, dict) else []
+        finding = next(
+            (item for item in findings if isinstance(item, dict) and item.get('id') == attrs['findingId']),
+            None,
+        )
+        planned_action = next(
+            (
+                item for item in actions
+                if isinstance(item, dict)
+                and item.get('findingId') == attrs['findingId']
+                and item.get('type') == attrs['action']
+            ),
+            None,
+        )
+        if finding is None:
+            raise serializers.ValidationError({'findingId': 'Finding não pertence ao diagnóstico informado.'})
+        if finding.get('packageName') != attrs['packageName']:
+            raise serializers.ValidationError({'packageName': 'O pacote não corresponde ao finding.'})
+        if planned_action is None or planned_action.get('availability') != 'available':
+            raise serializers.ValidationError({'action': 'A ação não estava disponível neste diagnóstico.'})
+        if planned_action.get('packageName') != attrs['packageName']:
+            raise serializers.ValidationError({'packageName': 'O pacote não corresponde à ação planejada.'})
+        return attrs
 
 
 class DiagnosticoSerializer(serializers.ModelSerializer):

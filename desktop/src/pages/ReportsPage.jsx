@@ -24,6 +24,19 @@ const STAGE_LABELS = {
 const STAGE_STATUS = {
   completed: 'Concluída', unavailable: 'Indisponível', running: 'Em andamento', waiting: 'Aguardando',
 }
+const FINDING_SEVERITY = {
+  info: 'Informativo', low: 'Baixo', medium: 'Médio', high: 'Alto', critical: 'Crítico',
+}
+const REMEDIATION_STATUS = {
+  resolved: 'Resolvido', failed: 'Falha', not_verified: 'Não verificado',
+}
+const TRANSITION_STATUS = {
+  executing: 'Executando', verifying: 'Verificando', resolved: 'Resolvido',
+  failed: 'Falha', not_verified: 'Não verificado',
+}
+const ACTION_LABELS = {
+  uninstall_user_app: 'Desinstalação de aplicativo',
+}
 
 function hasValue(value) {
   return value !== null && value !== undefined && value !== ''
@@ -48,12 +61,57 @@ function healthValue(diagnostic) {
   return `${diagnostic.health_score}/100`
 }
 
-function warningCount(diagnostic) {
-  return Array.isArray(diagnostic?.warnings) ? diagnostic.warnings.length : EMPTY_VALUE
+function technicalResult(diagnostic) {
+  return diagnostic?.resultado_tecnico && typeof diagnostic.resultado_tecnico === 'object'
+    ? diagnostic.resultado_tecnico
+    : null
 }
 
-function appTotal(diagnostic) {
-  return hasValue(diagnostic?.apps?.total) ? diagnostic.apps.total : EMPTY_VALUE
+function findingsFrom(diagnostic) {
+  const findings = technicalResult(diagnostic)?.security?.findings
+  return Array.isArray(findings) ? findings : []
+}
+
+function remediationsFrom(diagnostic) {
+  const remediations = technicalResult(diagnostic)?.remediations
+  return Array.isArray(remediations) ? remediations : []
+}
+
+function findingCount(diagnostic) {
+  const findings = technicalResult(diagnostic)?.security?.findings
+  return Array.isArray(findings) ? findings.length : EMPTY_VALUE
+}
+
+function remediationCount(diagnostic) {
+  const remediations = technicalResult(diagnostic)?.remediations
+  return Array.isArray(remediations) ? remediations.length : EMPTY_VALUE
+}
+
+function actionLabel(action) {
+  return ACTION_LABELS[action] || showValue(action)
+}
+
+function remediationStatusLabel(status) {
+  return REMEDIATION_STATUS[status] || showValue(status)
+}
+
+function remediationResultText(status) {
+  if (status === 'resolved') return 'A execução foi registrada como resolvida após a verificação disponível.'
+  if (status === 'failed') return 'A ação não foi confirmada como concluída.'
+  if (status === 'not_verified') return 'Não foi possível verificar o resultado da ação.'
+  return 'Resultado não disponível.'
+}
+
+function verificationText(verification) {
+  if (!verification || typeof verification !== 'object') return 'Dados de verificação não disponíveis.'
+  if (verification.status === 'not_verified') return 'Não foi possível verificar o resultado da ação.'
+  if (verification.status !== 'verified') return 'Status de verificação não disponível.'
+
+  const source = verification.source === 'package_manager' ? ' pelo Package Manager' : ''
+  const user = hasValue(verification.user) ? ` para o usuário Android ${verification.user}` : ''
+  if (verification.installed === false) return `Ausência do pacote confirmada${source}${user}.`
+  if (verification.installed === true) return `O pacote continuava instalado${source}${user}.`
+  return 'A verificação foi registrada sem informar o estado de instalação do pacote.'
 }
 
 function normalizeList(data) {
@@ -66,7 +124,7 @@ function ResourceField({ label, value }) {
   return <div className="dp-report-detail-field"><span>{label}</span><strong>{value}</strong></div>
 }
 
-function ReportsPage({ accessToken }) {
+function ReportsPage({ accessToken, diagnosticId = null }) {
   const [diagnostics, setDiagnostics] = useState([])
   const [listState, setListState] = useState({ status: 'loading', message: '' })
   const [view, setView] = useState('recent')
@@ -146,6 +204,10 @@ function ReportsPage({ accessToken }) {
     }
   }, [accessToken])
 
+  useEffect(() => {
+    if (diagnosticId !== null && diagnosticId !== undefined) openDetail(diagnosticId)
+  }, [diagnosticId, openDetail])
+
   const saveAssociation = useCallback(async () => {
     if (!detail.data || association.status !== 'ready') return
     setAssociation((current) => ({ ...current, saving: true, message: '', feedback: '' }))
@@ -175,6 +237,11 @@ function ReportsPage({ accessToken }) {
   }
   const hasActiveFilters = Boolean(query.trim()) || modeFilter !== 'all' || healthFilter !== 'all'
   const selected = detail.data
+  const selectedFindings = findingsFrom(selected)
+  const selectedRemediations = remediationsFrom(selected)
+  const selectedFindingsById = new Map(
+    selectedFindings.filter((finding) => hasValue(finding?.id)).map((finding) => [finding.id, finding]),
+  )
 
   return (
     <section className="dp-reports-page" aria-labelledby="dp-reports-title">
@@ -211,12 +278,12 @@ function ReportsPage({ accessToken }) {
             {filteredDiagnostics.map((diagnostic) => (
               <button className="dp-reports-item" type="button" key={diagnostic.id} onClick={() => openDetail(diagnostic.id)}>
                 <div className="dp-reports-file-icon"><FileText size={19} /></div>
-                <div className="dp-reports-item-identity"><strong>Diagnóstico #{diagnostic.id}</strong><span>{[diagnostic.fabricante, diagnostic.modelo].filter(Boolean).join(' ') || 'Não disponível'}</span><small>{showValue(diagnostic.serial)}</small></div>
+                <div className="dp-reports-item-identity"><strong>Diagnóstico #{diagnostic.id}</strong><span>{[diagnostic.fabricante, diagnostic.modelo].filter(Boolean).join(' ') || 'Não disponível'}</span><small>{showValue(diagnostic.serial)}</small><small>{diagnostic.cliente?.nome ? `Cliente: ${diagnostic.cliente.nome}` : 'Cliente não associado'}</small></div>
                 <div className="dp-reports-item-value"><span>Data</span><strong>{formatDate(diagnostic.finalizado_em)}</strong></div>
                 <div className="dp-reports-item-value"><span>Modo</span><strong>{modeLabel(diagnostic.modo)}</strong></div>
                 <div className="dp-reports-item-value"><span>Health Score</span><strong>{healthValue(diagnostic)}</strong><small>{showValue(diagnostic.health_label)}</small></div>
-                <div className="dp-reports-item-value"><span>Apps</span><strong>{appTotal(diagnostic)}</strong></div>
-                <div className="dp-reports-item-value"><span>Warnings</span><strong>{warningCount(diagnostic)}</strong></div>
+                <div className="dp-reports-item-value"><span>Findings</span><strong>{findingCount(diagnostic)}</strong></div>
+                <div className="dp-reports-item-value"><span>Correções</span><strong>{remediationCount(diagnostic)}</strong></div>
                 <ChevronRight size={18} className="dp-reports-item-chevron" />
               </button>
             ))}
@@ -262,6 +329,58 @@ function ReportsPage({ accessToken }) {
                 </div></section>
 
                 <section className="dp-report-detail-section"><h3><AppWindow size={16} /> Aplicativos</h3><div className="dp-report-detail-grid"><ResourceField label="Total" value={showValue(selected.apps?.total)} /><ResourceField label="Usuário" value={showValue(selected.apps?.userTotal)} /><ResourceField label="Sistema" value={showValue(selected.apps?.systemTotal)} /></div></section>
+
+                <section className="dp-report-detail-section">
+                  <h3><AlertTriangle size={16} /> Findings detectados</h3>
+                  {selectedFindings.length > 0 ? (
+                    <div className="dp-report-finding-list">
+                      {selectedFindings.map((finding, index) => (
+                        <article key={`${finding?.id || 'finding'}-${index}`}>
+                          <header>
+                            <strong>{showValue(finding?.title)}</strong>
+                            <span className={`severity-${finding?.severity || 'unknown'}`}>{FINDING_SEVERITY[finding?.severity] || showValue(finding?.severity)}</span>
+                          </header>
+                          {finding?.packageName && <code>{finding.packageName}</code>}
+                          <p>{showValue(finding?.description)}</p>
+                          <div><span>Recomendação registrada</span><strong>{showValue(finding?.recommendation)}</strong></div>
+                        </article>
+                      ))}
+                    </div>
+                  ) : <p className="dp-report-no-data">Nenhum finding registrado neste diagnóstico.</p>}
+                </section>
+
+                <section className="dp-report-detail-section">
+                  <h3><CheckCircle2 size={16} /> Histórico de correções</h3>
+                  {selectedRemediations.length > 0 ? (
+                    <div className="dp-report-remediation-list">
+                      {selectedRemediations.map((remediation, index) => {
+                        const relatedFinding = selectedFindingsById.get(remediation?.findingId)
+                        const transitions = Array.isArray(remediation?.transitions) ? remediation.transitions : []
+                        return (
+                          <article className={`dp-report-remediation status-${remediation?.status || 'unknown'}`} key={remediation?.executionId || `${remediation?.findingId || 'remediation'}-${index}`}>
+                            <header>
+                              <div><span>Resultado</span><strong>{remediationStatusLabel(remediation?.status)}</strong></div>
+                              <time>{formatDate(remediation?.finishedAt || remediation?.startedAt)}</time>
+                            </header>
+                            <div className="dp-report-remediation-flow">
+                              <div><span>Detectado</span><strong>{relatedFinding?.title || remediation?.findingId || 'Finding relacionado não disponível.'}</strong>{relatedFinding?.description && <p>{relatedFinding.description}</p>}</div>
+                              <div><span>Recomendado</span><strong>{relatedFinding?.recommendation || 'Recomendação não disponível.'}</strong></div>
+                              <div><span>Executado</span><strong>{actionLabel(remediation?.action)}</strong>{remediation?.packageName && <code>{remediation.packageName}</code>}<small>Início: {formatDate(remediation?.startedAt)} · Término: {formatDate(remediation?.finishedAt)}</small></div>
+                              <div><span>Verificação</span><strong>{verificationText(remediation?.verification)}</strong></div>
+                              <div><span>Resultado final</span><strong>{remediationStatusLabel(remediation?.status)}</strong><p>{remediationResultText(remediation?.status)}</p></div>
+                            </div>
+                            <div className="dp-report-remediation-timeline">
+                              <span>Linha do tempo</span>
+                              {transitions.length > 0 ? (
+                                <ol>{transitions.map((transition, transitionIndex) => <li key={`${transition?.status || 'transition'}-${transitionIndex}`}><i aria-hidden="true" /><div><strong>{TRANSITION_STATUS[transition?.status] || showValue(transition?.status)}</strong><time>{formatDate(transition?.at)}</time></div></li>)}</ol>
+                              ) : <p>Nenhuma transição registrada nesta correção.</p>}
+                            </div>
+                          </article>
+                        )
+                      })}
+                    </div>
+                  ) : <p className="dp-report-no-data">Nenhuma ação de correção registrada neste diagnóstico.</p>}
+                </section>
 
                 <section className="dp-report-detail-section"><h3><AlertTriangle size={16} /> Avisos</h3>{Array.isArray(selected.warnings) && selected.warnings.length > 0 ? <div className="dp-report-warning-list">{selected.warnings.map((warning, index) => <div key={`${warning?.stage || 'warning'}-${index}`}><strong>{showValue(warning?.stage)}</strong><span>{showValue(warning?.message)}</span>{warning?.code && <small>{warning.code}</small>}</div>)}</div> : <p className="dp-report-no-data">{Array.isArray(selected.warnings) ? 'Nenhum warning registrado nesta coleta.' : 'Não disponível.'}</p>}</section>
 

@@ -68,6 +68,29 @@ export async function salvarDiagnostico(resultado, { serial, accessToken } = {})
   return dados
 }
 
+export async function salvarRemediacao(diagnosticoId, remediation, { accessToken } = {}) {
+  if (!diagnosticoId) {
+    throw new Error('O diagnóstico salvo é necessário para sincronizar a remediação.')
+  }
+
+  const resposta = await fetchAutenticado(
+    `${DIAGNOSTICS_URL}${encodeURIComponent(diagnosticoId)}/remediations/`,
+    {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(remediation),
+    },
+    accessToken,
+  )
+  const dados = await lerResposta(resposta)
+
+  if (!resposta.ok) {
+    throw criarErroApi(resposta, dados, 'Não foi possível sincronizar a correção com o histórico.')
+  }
+
+  return dados
+}
+
 export async function listarDiagnosticos({ accessToken } = {}) {
   const resposta = await fetchAutenticado(DIAGNOSTICS_URL, {}, accessToken)
   const dados = await lerResposta(resposta)

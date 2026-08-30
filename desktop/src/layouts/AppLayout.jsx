@@ -1,6 +1,6 @@
 import {
   LayoutDashboard, ScanLine, Smartphone, ShieldAlert, Users, FileText,
-  BarChart3, Settings, CreditCard, Search, Bell, Sun, ChevronDown, HelpCircle
+  BarChart3, Settings, CreditCard, Search, Bell, ChevronDown, HelpCircle
 } from 'lucide-react'
 import './AppLayout.css'
 
@@ -80,12 +80,11 @@ function AppLayout({ username, onLogout, activePage, onNavigate, children }) {
               <Bell size={18} />
               <span className="dp-notif-badge">3</span>
             </button>
-            <button className="dp-icon-btn"><Sun size={18} /></button>
             <div className="dp-user">
               <div className="dp-avatar" />
               <div>
                 <div className="dp-user-name">{username || 'Assistência Tech'}</div>
-                <div className="dp-user-role">Administrador</div>
+                <div className="dp-user-role">Conta autenticada</div>
               </div>
               <ChevronDown size={16} />
             </div>

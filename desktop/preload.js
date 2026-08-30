@@ -11,6 +11,7 @@ function assinar(canal, callback) {
 
 contextBridge.exposeInMainWorld('diagpro', {
   getDeviceStatus: () => ipcRenderer.invoke('get-device-status'),
+  checkAdb: () => ipcRenderer.invoke('check-adb'),
   onDeviceStatus: (callback) => assinar('device-status-changed', callback),
   runDiagnostic: (serial) => ipcRenderer.invoke('run-diagnostic', { serial }),
   startScan: ({ serial, mode, modules }) => ipcRenderer.invoke('start-scan', { serial, mode, modules }),

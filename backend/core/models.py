@@ -1,13 +1,21 @@
 from django.db import models
 from django.conf import settings
 from django.core.validators import MaxValueValidator, MinValueValidator
+from django.utils import timezone
 import uuid
 
 
 class Empresa(models.Model):
+    usuario = models.OneToOneField(
+        settings.AUTH_USER_MODEL,
+        on_delete=models.CASCADE,
+        related_name='empresa',
+        null=True,
+        blank=True,
+    )
     nome = models.CharField(max_length=150)
-    cnpj = models.CharField(max_length=18, unique=True)
-    email = models.EmailField()
+    cnpj = models.CharField(max_length=18, unique=True, null=True, blank=True)
+    email = models.EmailField(blank=True)
     telefone = models.CharField(max_length=20, blank=True)
     endereco = models.CharField(max_length=255, blank=True)
     logo = models.ImageField(upload_to='logos/', blank=True, null=True)
@@ -94,6 +102,34 @@ class Relatorio(models.Model):
         return f'Relatório #{self.pk}'
 
 
+class Plano(models.Model):
+    nome = models.CharField(max_length=120)
+    slug = models.SlugField(max_length=120, unique=True)
+    descricao = models.TextField(blank=True)
+    ativo = models.BooleanField(default=True, db_index=True)
+    preco_mensal = models.DecimalField(
+        max_digits=10,
+        decimal_places=2,
+        null=True,
+        blank=True,
+        validators=[MinValueValidator(0)],
+    )
+    moeda = models.CharField(max_length=3, blank=True)
+    max_usuarios = models.PositiveIntegerField(null=True, blank=True, validators=[MinValueValidator(1)])
+    max_dispositivos = models.PositiveIntegerField(null=True, blank=True, validators=[MinValueValidator(1)])
+    max_diagnosticos_mes = models.PositiveIntegerField(null=True, blank=True, validators=[MinValueValidator(1)])
+    scanner_completo = models.BooleanField(default=False)
+    remediacao = models.BooleanField(default=False)
+    relatorios = models.BooleanField(default=False)
+    visao_gerencial = models.BooleanField(default=False)
+
+    class Meta:
+        ordering = ['nome', 'id']
+
+    def __str__(self):
+        return self.nome
+
+
 class Licenca(models.Model):
     PLANO_CHOICES = [
         ('mensal', 'Mensal'),
@@ -101,15 +137,57 @@ class Licenca(models.Model):
         ('empresarial', 'Empresarial'),
     ]
 
-    empresa = models.OneToOneField(Empresa, on_delete=models.CASCADE, related_name='licenca')
+    STATUS_CHOICES = [
+        ('trial', 'Período de teste'),
+        ('active', 'Ativa'),
+        ('past_due', 'Pagamento pendente'),
+        ('canceled', 'Cancelada'),
+        ('expired', 'Expirada'),
+    ]
+
+    usuario = models.OneToOneField(
+        settings.AUTH_USER_MODEL,
+        on_delete=models.CASCADE,
+        related_name='licenca',
+        null=True,
+    )
+    empresa = models.OneToOneField(
+        Empresa,
+        on_delete=models.SET_NULL,
+        related_name='licenca',
+        null=True,
+        blank=True,
+    )
+    plano = models.ForeignKey(
+        Plano,
+        on_delete=models.PROTECT,
+        related_name='licencas',
+        null=True,
+    )
     serial = models.UUIDField(default=uuid.uuid4, editable=False, unique=True)
-    plano = models.CharField(max_length=20, choices=PLANO_CHOICES, default='mensal')
-    data_inicio = models.DateTimeField(auto_now_add=True)
-    data_expiracao = models.DateTimeField()
-    ativa = models.BooleanField(default=True)
+    ciclo_legado = models.CharField(max_length=20, choices=PLANO_CHOICES, default='mensal')
+    inicio = models.DateTimeField(auto_now_add=True)
+    fim = models.DateTimeField()
+    status = models.CharField(max_length=20, choices=STATUS_CHOICES, null=True)
+    renovacao_automatica = models.BooleanField(default=False)
+    provider = models.CharField(max_length=60, blank=True)
+    external_subscription_id = models.CharField(max_length=180, blank=True)
+    ativa_legado = models.BooleanField(default=True)
+    atualizado_em = models.DateTimeField(auto_now=True, null=True)
+
+    @property
+    def status_efetivo(self):
+        if self.fim and self.fim < timezone.now():
+            return 'expired'
+        return self.status
+
+    @property
+    def valida(self):
+        return self.status_efetivo in {'trial', 'active'}
 
     def __str__(self):
-        return f'Licença {self.plano} - {self.empresa}'
+        plano = self.plano.nome if self.plano_id else 'sem plano configurado'
+        return f'Assinatura {plano} - usuário {self.usuario_id or "legado"}'
 
 
 class Diagnostico(models.Model):

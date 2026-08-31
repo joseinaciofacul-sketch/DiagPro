@@ -1,7 +1,7 @@
 from rest_framework import serializers
 from django.contrib.auth import password_validation
 from django.contrib.auth import get_user_model
-from .models import Empresa, Cliente, Dispositivo, Analise, Relatorio, Plano, Licenca, Diagnostico
+from .models import Empresa, Cliente, Dispositivo, Analise, Relatorio, Plano, Licenca, Pagamento, Diagnostico
 
 
 class EmpresaSerializer(serializers.ModelSerializer):
@@ -154,6 +154,31 @@ class LicencaSerializer(serializers.ModelSerializer):
             'renovacao_automatica', 'atualizado_em',
         ]
         read_only_fields = fields
+
+
+class PagamentoSerializer(serializers.ModelSerializer):
+    plano = PlanoSerializer(read_only=True)
+
+    class Meta:
+        model = Pagamento
+        fields = [
+            'id', 'plano', 'status', 'provider_status', 'provider_status_detail',
+            'valor_esperado', 'moeda', 'checkout_url', 'sandbox', 'pago_em',
+            'ativado_em', 'criado_em', 'atualizado_em',
+        ]
+        read_only_fields = fields
+
+
+class CheckoutSerializer(serializers.Serializer):
+    plano_id = serializers.IntegerField(min_value=1)
+
+    def validate(self, attrs):
+        unknown_fields = set(self.initial_data) - {'plano_id'}
+        if unknown_fields:
+            raise serializers.ValidationError({
+                'campos': f'Campos não permitidos: {", ".join(sorted(unknown_fields))}.',
+            })
+        return attrs
 
 
 class RemediationTransitionSerializer(serializers.Serializer):

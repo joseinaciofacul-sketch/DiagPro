@@ -6,13 +6,15 @@ from rest_framework.views import APIView
 from rest_framework.response import Response
 from rest_framework import status
 from rest_framework.exceptions import ValidationError
+from rest_framework.permissions import AllowAny
+from django.conf import settings
 from django.contrib.auth import get_user_model
 from django.db.models import Count, Max
 from django.shortcuts import get_object_or_404
 from django.db import transaction
 from copy import deepcopy
 
-from .models import Empresa, Cliente, Dispositivo, Analise, Relatorio, Plano, Licenca, Diagnostico
+from .models import Empresa, Cliente, Dispositivo, Analise, Relatorio, Plano, Licenca, Pagamento, Diagnostico
 from .serializers import (
     EmpresaSerializer,
     ClienteSerializer,
@@ -21,10 +23,21 @@ from .serializers import (
     RelatorioSerializer,
     LicencaSerializer,
     PlanoSerializer,
+    PagamentoSerializer,
+    CheckoutSerializer,
     DiagnosticoSerializer,
     RemediationAuditSerializer,
     CurrentUserSerializer,
     ChangePasswordSerializer,
+)
+from .payments import (
+    InvalidWebhookSignature,
+    PaymentConfigurationError,
+    PaymentIntegrationError,
+    PaymentReconciliationError,
+    create_checkout_preference,
+    process_mercado_pago_webhook,
+    validate_webhook_signature,
 )
 from .subscriptions import diagnostic_capability, get_user_subscription, subscription_usage
 
@@ -122,13 +135,123 @@ class CurrentSubscriptionView(APIView):
     def get(self, request):
         license_record = get_user_subscription(request.user)
         capability = diagnostic_capability(request.user, license_record)
+        latest_payment = (
+            Pagamento.objects
+            .filter(usuario=request.user)
+            .select_related('plano')
+            .first()
+        )
+        payment_data = (
+            PagamentoSerializer(latest_payment, context={'request': request}).data
+            if latest_payment else None
+        )
         if license_record is None:
-            return Response({'assinatura': None, 'uso': None, 'capacidade_diagnostico': capability})
+            return Response({
+                'assinatura': None,
+                'uso': None,
+                'capacidade_diagnostico': capability,
+                'pagamento_recente': payment_data,
+            })
 
         return Response({
             'assinatura': LicencaSerializer(license_record, context={'request': request}).data,
             'uso': subscription_usage(request.user),
             'capacidade_diagnostico': capability,
+            'pagamento_recente': payment_data,
+        })
+
+
+class SubscriptionCheckoutView(APIView):
+    def post(self, request):
+        serializer = CheckoutSerializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
+        plan = get_object_or_404(Plano, pk=serializer.validated_data['plano_id'])
+        if not plan.ativo:
+            return Response({
+                'code': 'plan_not_available',
+                'message': 'Este plano não está disponível para compra.',
+            }, status=status.HTTP_400_BAD_REQUEST)
+        if plan.preco_mensal is None or plan.preco_mensal <= 0:
+            return Response({
+                'code': 'plan_price_not_configured',
+                'message': 'Este plano ainda não possui preço válido para checkout.',
+            }, status=status.HTTP_400_BAD_REQUEST)
+
+        currency = (plan.moeda or '').strip().upper()
+        if len(currency) != 3 or not currency.isalpha():
+            return Response({
+                'code': 'plan_currency_not_configured',
+                'message': 'Este plano ainda não possui moeda válida para checkout.',
+            }, status=status.HTTP_400_BAD_REQUEST)
+
+        payment = Pagamento.objects.create(
+            usuario=request.user,
+            plano=plan,
+            valor_esperado=plan.preco_mensal,
+            moeda=currency,
+            sandbox=bool(getattr(settings, 'MERCADO_PAGO_USE_SANDBOX', True)),
+        )
+        try:
+            preference_id, checkout_url = create_checkout_preference(payment, request.user)
+        except PaymentConfigurationError as error:
+            payment.status = 'failed'
+            payment.erro_codigo = error.code
+            payment.save(update_fields=['status', 'erro_codigo', 'atualizado_em'])
+            return Response({'code': error.code, 'message': error.message}, status=status.HTTP_503_SERVICE_UNAVAILABLE)
+        except PaymentIntegrationError as error:
+            payment.status = 'failed'
+            payment.erro_codigo = error.code
+            payment.save(update_fields=['status', 'erro_codigo', 'atualizado_em'])
+            return Response({'code': error.code, 'message': error.message}, status=status.HTTP_502_BAD_GATEWAY)
+
+        payment.external_preference_id = preference_id
+        payment.checkout_url = checkout_url
+        payment.save(update_fields=['external_preference_id', 'checkout_url', 'atualizado_em'])
+        return Response({
+            'pagamento_id': payment.id,
+            'status': payment.status,
+            'checkout_url': checkout_url,
+            'sandbox': payment.sandbox,
+        }, status=status.HTTP_201_CREATED)
+
+
+class MercadoPagoWebhookView(APIView):
+    authentication_classes = []
+    permission_classes = [AllowAny]
+
+    def post(self, request):
+        notification_type = str(request.data.get('type') or request.query_params.get('type') or '').lower()
+        if notification_type and notification_type != 'payment':
+            return Response({'processed': False, 'code': 'notification_type_ignored'})
+
+        data_id = request.query_params.get('data.id')
+        try:
+            validate_webhook_signature(
+                x_signature=request.headers.get('x-signature'),
+                x_request_id=request.headers.get('x-request-id'),
+                data_id=data_id,
+            )
+        except InvalidWebhookSignature as error:
+            return Response({'code': error.code, 'message': error.message}, status=status.HTTP_401_UNAUTHORIZED)
+        except PaymentConfigurationError as error:
+            return Response({'code': error.code, 'message': error.message}, status=status.HTTP_503_SERVICE_UNAVAILABLE)
+
+        try:
+            payment, _license_record, activated = process_mercado_pago_webhook(
+                data_id=data_id,
+                request_id=request.headers.get('x-request-id'),
+            )
+        except PaymentConfigurationError as error:
+            return Response({'code': error.code, 'message': error.message}, status=status.HTTP_503_SERVICE_UNAVAILABLE)
+        except PaymentReconciliationError as error:
+            return Response({'processed': False, 'code': error.code, 'message': error.message})
+        except PaymentIntegrationError as error:
+            return Response({'code': error.code, 'message': error.message}, status=status.HTTP_502_BAD_GATEWAY)
+
+        return Response({
+            'processed': True,
+            'payment_status': payment.status,
+            'subscription_activated': activated,
         })
 
 

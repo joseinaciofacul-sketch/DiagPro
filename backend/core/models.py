@@ -190,6 +190,62 @@ class Licenca(models.Model):
         return f'Assinatura {plano} - usuário {self.usuario_id or "legado"}'
 
 
+class Pagamento(models.Model):
+    STATUS_CHOICES = [
+        ('checkout_created', 'Checkout criado'),
+        ('pending', 'Pagamento pendente'),
+        ('approved', 'Pagamento aprovado'),
+        ('rejected', 'Pagamento recusado'),
+        ('canceled', 'Pagamento cancelado'),
+        ('refunded', 'Pagamento reembolsado'),
+        ('charged_back', 'Pagamento contestado'),
+        ('invalid', 'Pagamento inválido'),
+        ('failed', 'Falha de integração'),
+    ]
+
+    usuario = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        on_delete=models.CASCADE,
+        related_name='pagamentos',
+    )
+    plano = models.ForeignKey(
+        Plano,
+        on_delete=models.PROTECT,
+        related_name='pagamentos',
+    )
+    provider = models.CharField(max_length=30, default='mercadopago', editable=False)
+    external_reference = models.UUIDField(default=uuid.uuid4, unique=True, editable=False)
+    external_preference_id = models.CharField(max_length=180, blank=True, db_index=True)
+    external_payment_id = models.CharField(max_length=180, null=True, blank=True, unique=True)
+    status = models.CharField(max_length=30, choices=STATUS_CHOICES, default='checkout_created', db_index=True)
+    provider_status = models.CharField(max_length=60, blank=True)
+    provider_status_detail = models.CharField(max_length=180, blank=True)
+    valor_esperado = models.DecimalField(
+        max_digits=10,
+        decimal_places=2,
+        validators=[MinValueValidator(0.01)],
+    )
+    moeda = models.CharField(max_length=3)
+    checkout_url = models.URLField(max_length=600, blank=True)
+    sandbox = models.BooleanField(default=True)
+    webhook_count = models.PositiveIntegerField(default=0)
+    ultimo_webhook_request_id = models.CharField(max_length=180, blank=True)
+    erro_codigo = models.CharField(max_length=80, blank=True)
+    pago_em = models.DateTimeField(null=True, blank=True)
+    ativado_em = models.DateTimeField(null=True, blank=True)
+    criado_em = models.DateTimeField(auto_now_add=True)
+    atualizado_em = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        ordering = ['-criado_em', '-id']
+        indexes = [
+            models.Index(fields=['usuario', '-criado_em'], name='payment_user_created_idx'),
+        ]
+
+    def __str__(self):
+        return f'Pagamento #{self.pk} - {self.status}'
+
+
 class Diagnostico(models.Model):
     MODO_CHOICES = [
         ('quick', 'Rápida'),

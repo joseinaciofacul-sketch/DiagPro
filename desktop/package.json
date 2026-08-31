@@ -4,7 +4,7 @@
   "description": "",
   "main": "main.js",
   "scripts": {
-    "test": "node --test security/securityAnalyzer.test.js remediation/remediation.test.js",
+    "test": "node --test security/securityAnalyzer.test.js remediation/remediation.test.js payments/checkout.test.js",
     "dev": "vite",
     "electron": "electron .",
     "build": "vite build",

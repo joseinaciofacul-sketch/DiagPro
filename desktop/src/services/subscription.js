@@ -1,6 +1,7 @@
 import { fetchAutenticado } from '../utils/auth.js'
 
 const SUBSCRIPTION_URL = 'http://127.0.0.1:8000/api/assinatura/'
+const CHECKOUT_URL = 'http://127.0.0.1:8000/api/assinatura/checkout/'
 const PLANS_URL = 'http://127.0.0.1:8000/api/planos/'
 
 async function parseResponse(response) {
@@ -40,4 +41,20 @@ export async function getDiagnosticCapability({ accessToken } = {}) {
 
 export function listAvailablePlans({ accessToken } = {}) {
   return request(PLANS_URL, accessToken, 'Não foi possível carregar os planos disponíveis.')
+}
+
+export async function createSubscriptionCheckout(planId, { accessToken } = {}) {
+  const response = await fetchAutenticado(CHECKOUT_URL, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ plano_id: planId }),
+  }, accessToken)
+  const data = await parseResponse(response)
+  if (!response.ok) {
+    throw apiError(response, data, data?.message || 'Não foi possível iniciar o checkout.')
+  }
+  if (!data?.checkout_url || !data?.pagamento_id) {
+    throw new Error('O backend não retornou um checkout válido.')
+  }
+  return data
 }

@@ -1,5 +1,5 @@
 from django.contrib import admin
-from .models import Empresa, Cliente, Dispositivo, Analise, Relatorio, Plano, Licenca
+from .models import Empresa, Cliente, Dispositivo, Analise, Relatorio, Plano, Licenca, Pagamento
 
 admin.site.register(Empresa)
 admin.site.register(Cliente)
@@ -31,3 +31,28 @@ class LicencaAdmin(admin.ModelAdmin):
     @admin.display(description='Status efetivo')
     def status_efetivo_admin(self, obj):
         return obj.status_efetivo or 'Não definido'
+
+
+@admin.register(Pagamento)
+class PagamentoAdmin(admin.ModelAdmin):
+    list_display = (
+        'id', 'usuario', 'plano', 'status', 'valor_esperado', 'moeda',
+        'sandbox', 'criado_em', 'ativado_em',
+    )
+    list_filter = ('status', 'sandbox', 'plano')
+    search_fields = (
+        'usuario__username', 'external_reference', 'external_preference_id',
+        'external_payment_id',
+    )
+    readonly_fields = (
+        'usuario', 'plano', 'provider', 'external_reference', 'external_preference_id', 'external_payment_id',
+        'status', 'provider_status', 'provider_status_detail', 'valor_esperado', 'moeda',
+        'checkout_url', 'sandbox', 'webhook_count', 'ultimo_webhook_request_id',
+        'erro_codigo', 'pago_em', 'ativado_em', 'criado_em', 'atualizado_em',
+    )
+
+    def has_add_permission(self, request):
+        return False
+
+    def has_delete_permission(self, request, obj=None):
+        return False

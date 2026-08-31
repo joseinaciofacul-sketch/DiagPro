@@ -13,6 +13,8 @@ from .views import (
     ChangePasswordView,
     PlanListView,
     CurrentSubscriptionView,
+    SubscriptionCheckoutView,
+    MercadoPagoWebhookView,
 )
 
 router = DefaultRouter()
@@ -29,4 +31,6 @@ urlpatterns = [
     path('me/password/', ChangePasswordView.as_view(), name='change-password'),
     path('planos/', PlanListView.as_view(), name='plan-list'),
     path('assinatura/', CurrentSubscriptionView.as_view(), name='current-subscription'),
+    path('assinatura/checkout/', SubscriptionCheckoutView.as_view(), name='subscription-checkout'),
+    path('pagamentos/mercadopago/webhook/', MercadoPagoWebhookView.as_view(), name='mercado-pago-webhook'),
 ] + router.urls

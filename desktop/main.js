@@ -1,5 +1,6 @@
-const { app, BrowserWindow, ipcMain } = require('electron')
+const { app, BrowserWindow, ipcMain, shell } = require('electron')
 const path = require('path')
+const { isMercadoPagoCheckoutUrl } = require('./payments/checkout')
 const {
   verificarEstado,
   coletarDiagnostico,
@@ -131,6 +132,18 @@ ipcMain.handle('uninstall-user-app', async (_event, { serial, packageName, confi
     return await desinstalarAppUsuario(serial, packageName, confirmationToken, findingId)
   } catch (err) {
     return { ok: false, code: err.codigo || 'UNINSTALL_FAILED', message: err.message }
+  }
+})
+
+ipcMain.handle('open-external-checkout', async (_event, { url } = {}) => {
+  if (!isMercadoPagoCheckoutUrl(url)) {
+    return { ok: false, code: 'INVALID_CHECKOUT_URL', message: 'O endereço de checkout não é permitido.' }
+  }
+  try {
+    await shell.openExternal(url)
+    return { ok: true }
+  } catch {
+    return { ok: false, code: 'CHECKOUT_OPEN_FAILED', message: 'Não foi possível abrir o checkout externo.' }
   }
 })
 

@@ -1,13 +1,19 @@
 from datetime import timedelta
+from decimal import Decimal
+import hashlib
+import hmac
+from unittest.mock import patch
 
 from django.contrib import admin
 from django.contrib.auth import authenticate, get_user_model
+from django.test import override_settings
 from django.utils import timezone
 from rest_framework import status
-from rest_framework.test import APITestCase
+from rest_framework.test import APIClient, APITestCase
 from rest_framework_simplejwt.tokens import RefreshToken
 
-from .models import Cliente, Diagnostico, Empresa, Licenca, Plano
+from .models import Cliente, Diagnostico, Empresa, Licenca, Pagamento, Plano
+from .payments import PaymentIntegrationError
 
 
 class DiagnosticoApiTests(APITestCase):
@@ -895,3 +901,372 @@ class SubscriptionApiTests(APITestCase):
     def test_plano_e_assinatura_estao_registrados_no_admin(self):
         self.assertTrue(admin.site.is_registered(Plano))
         self.assertTrue(admin.site.is_registered(Licenca))
+
+
+@override_settings(
+    MERCADO_PAGO_ACCESS_TOKEN='TEST-backend-only-token',
+    MERCADO_PAGO_WEBHOOK_SECRET='webhook-test-secret',
+    MERCADO_PAGO_SUCCESS_URL='https://example.com/payments/success',
+    MERCADO_PAGO_FAILURE_URL='https://example.com/payments/failure',
+    MERCADO_PAGO_PENDING_URL='https://example.com/payments/pending',
+    MERCADO_PAGO_WEBHOOK_URL='https://example.com/api/payments/webhook',
+    MERCADO_PAGO_USE_SANDBOX=True,
+    MERCADO_PAGO_LICENSE_DURATION_DAYS=30,
+)
+class MercadoPagoPaymentsApiTests(APITestCase):
+    checkout_url = '/api/assinatura/checkout/'
+    webhook_url = '/api/pagamentos/mercadopago/webhook/'
+
+    def setUp(self):
+        user_model = get_user_model()
+        self.usuario = user_model.objects.create_user(
+            username='payment-owner',
+            password='senha-segura',
+            email='payment-owner@example.com',
+        )
+        self.outro_usuario = user_model.objects.create_user(
+            username='payment-other',
+            password='senha-segura',
+        )
+        self.plano = Plano.objects.create(
+            nome='Plano Mercado Pago',
+            slug='mercado-pago',
+            ativo=True,
+            preco_mensal=Decimal('79.90'),
+            moeda='BRL',
+            max_diagnosticos_mes=10,
+        )
+
+    def autenticar(self, usuario=None):
+        access_token = str(RefreshToken.for_user(usuario or self.usuario).access_token)
+        self.client.credentials(HTTP_AUTHORIZATION=f'Bearer {access_token}')
+
+    def preference_response(self):
+        return {
+            'id': 'preference-test-1',
+            'sandbox_init_point': 'https://sandbox.mercadopago.com.br/checkout/test',
+            'init_point': 'https://www.mercadopago.com.br/checkout/live',
+        }
+
+    def criar_pagamento(self, usuario=None):
+        return Pagamento.objects.create(
+            usuario=usuario or self.usuario,
+            plano=self.plano,
+            external_preference_id='preference-test-1',
+            valor_esperado=self.plano.preco_mensal,
+            moeda='BRL',
+            checkout_url='https://sandbox.mercadopago.com.br/checkout/test',
+            sandbox=True,
+        )
+
+    def remote_payment(self, payment, payment_id='100001', external_status='approved', **overrides):
+        data = {
+            'id': payment_id,
+            'external_reference': str(payment.external_reference),
+            'status': external_status,
+            'status_detail': 'accredited' if external_status == 'approved' else external_status,
+            'transaction_amount': '79.90',
+            'currency_id': 'BRL',
+            'live_mode': False,
+            'date_approved': timezone.now().isoformat(),
+        }
+        data.update(overrides)
+        return data
+
+    def webhook_headers(self, payment_id, request_id='request-test-1'):
+        timestamp = '1704908010'
+        manifest = f'id:{str(payment_id).lower()};request-id:{request_id};ts:{timestamp};'
+        signature = hmac.new(
+            b'webhook-test-secret',
+            manifest.encode('utf-8'),
+            hashlib.sha256,
+        ).hexdigest()
+        return {
+            'HTTP_X_SIGNATURE': f'ts={timestamp},v1={signature}',
+            'HTTP_X_REQUEST_ID': request_id,
+        }
+
+    def enviar_webhook(self, payment_id='100001', request_id='request-test-1', headers=None):
+        webhook_headers = headers or self.webhook_headers(payment_id, request_id)
+        return self.client.post(
+            f'{self.webhook_url}?data.id={payment_id}&type=payment',
+            {'type': 'payment', 'data': {'id': payment_id}},
+            format='json',
+            **webhook_headers,
+        )
+
+    def diagnostic_payload(self):
+        now = timezone.now()
+        return {
+            'serial': 'PAYMENT-LICENSE-TEST',
+            'modo': 'quick',
+            'modulos': ['system'],
+            'iniciado_em': (now - timedelta(minutes=1)).isoformat(),
+            'finalizado_em': now.isoformat(),
+            'health_available': None,
+            'resultado_tecnico': {'mode': 'quick'},
+        }
+
+    def test_checkout_sem_jwt_e_bloqueado(self):
+        resposta = self.client.post(self.checkout_url, {'plano_id': self.plano.id}, format='json')
+
+        self.assertEqual(resposta.status_code, status.HTTP_401_UNAUTHORIZED)
+        self.assertEqual(Pagamento.objects.count(), 0)
+
+    @patch('core.payments.MercadoPagoClient.create_preference')
+    def test_checkout_com_plano_inexistente_retorna_404(self, create_preference):
+        self.autenticar()
+
+        resposta = self.client.post(self.checkout_url, {'plano_id': 999999}, format='json')
+
+        self.assertEqual(resposta.status_code, status.HTTP_404_NOT_FOUND)
+        create_preference.assert_not_called()
+
+    @patch('core.payments.MercadoPagoClient.create_preference')
+    def test_checkout_com_plano_inativo_e_bloqueado(self, create_preference):
+        self.plano.ativo = False
+        self.plano.save(update_fields=['ativo'])
+        self.autenticar()
+
+        resposta = self.client.post(self.checkout_url, {'plano_id': self.plano.id}, format='json')
+
+        self.assertEqual(resposta.status_code, status.HTTP_400_BAD_REQUEST)
+        self.assertEqual(resposta.data['code'], 'plan_not_available')
+        create_preference.assert_not_called()
+
+    @patch('core.payments.MercadoPagoClient.create_preference')
+    def test_frontend_nao_consegue_alterar_preco(self, create_preference):
+        self.autenticar()
+
+        resposta = self.client.post(
+            self.checkout_url,
+            {'plano_id': self.plano.id, 'preco': '0.01', 'moeda': 'USD'},
+            format='json',
+        )
+
+        self.assertEqual(resposta.status_code, status.HTTP_400_BAD_REQUEST)
+        self.assertEqual(Pagamento.objects.count(), 0)
+        create_preference.assert_not_called()
+
+    @patch('core.payments.MercadoPagoClient.create_preference')
+    def test_checkout_usa_preco_moeda_e_referencia_do_backend(self, create_preference):
+        create_preference.return_value = self.preference_response()
+        self.autenticar()
+
+        resposta = self.client.post(self.checkout_url, {'plano_id': self.plano.id}, format='json')
+
+        self.assertEqual(resposta.status_code, status.HTTP_201_CREATED, resposta.data)
+        payment = Pagamento.objects.get()
+        self.assertEqual(payment.valor_esperado, Decimal('79.90'))
+        self.assertEqual(payment.moeda, 'BRL')
+        sent_payload = create_preference.call_args.args[0]
+        self.assertEqual(sent_payload['items'][0]['unit_price'], 79.9)
+        self.assertEqual(sent_payload['items'][0]['currency_id'], 'BRL')
+        self.assertEqual(sent_payload['external_reference'], str(payment.external_reference))
+        self.assertNotIn('access_token', sent_payload)
+
+    @patch('core.payments.MercadoPagoClient.get_payment')
+    def test_pagamento_pendente_nao_ativa_assinatura(self, get_payment):
+        payment = self.criar_pagamento()
+        get_payment.return_value = self.remote_payment(payment, external_status='pending')
+
+        resposta = self.enviar_webhook()
+
+        self.assertEqual(resposta.status_code, status.HTTP_200_OK, resposta.data)
+        payment.refresh_from_db()
+        license_record = Licenca.objects.get(usuario=self.usuario)
+        self.assertEqual(payment.status, 'pending')
+        self.assertEqual(license_record.status, 'past_due')
+        self.assertFalse(license_record.valida)
+
+    @patch('core.payments.MercadoPagoClient.get_payment')
+    def test_pagamento_aprovado_valido_ativa_assinatura(self, get_payment):
+        payment = self.criar_pagamento()
+        get_payment.return_value = self.remote_payment(payment)
+
+        resposta = self.enviar_webhook()
+
+        self.assertEqual(resposta.status_code, status.HTTP_200_OK, resposta.data)
+        self.assertTrue(resposta.data['subscription_activated'])
+        payment.refresh_from_db()
+        license_record = Licenca.objects.get(usuario=self.usuario)
+        self.assertEqual(payment.status, 'approved')
+        self.assertIsNotNone(payment.ativado_em)
+        self.assertEqual(license_record.status, 'active')
+        self.assertEqual(license_record.plano, self.plano)
+        self.assertEqual(license_record.provider, 'mercadopago')
+        self.assertEqual(license_record.external_subscription_id, '100001')
+        self.assertTrue(license_record.valida)
+
+    @patch('core.payments.MercadoPagoClient.get_payment')
+    def test_pagamento_rejeitado_nao_ativa_assinatura(self, get_payment):
+        payment = self.criar_pagamento()
+        get_payment.return_value = self.remote_payment(payment, external_status='rejected')
+
+        resposta = self.enviar_webhook()
+
+        self.assertEqual(resposta.status_code, status.HTTP_200_OK, resposta.data)
+        payment.refresh_from_db()
+        license_record = Licenca.objects.get(usuario=self.usuario)
+        self.assertEqual(payment.status, 'rejected')
+        self.assertIsNone(payment.ativado_em)
+        self.assertEqual(license_record.status, 'canceled')
+        self.assertFalse(license_record.valida)
+
+    @patch('core.payments.MercadoPagoClient.get_payment')
+    def test_webhook_aprovado_duplicado_e_idempotente(self, get_payment):
+        payment = self.criar_pagamento()
+        get_payment.return_value = self.remote_payment(payment)
+
+        primeira = self.enviar_webhook(request_id='request-duplicate-1')
+        first_expiration = Licenca.objects.get(usuario=self.usuario).fim
+        segunda = self.enviar_webhook(request_id='request-duplicate-2')
+
+        self.assertTrue(primeira.data['subscription_activated'])
+        self.assertFalse(segunda.data['subscription_activated'])
+        payment.refresh_from_db()
+        self.assertEqual(payment.webhook_count, 2)
+        self.assertEqual(Licenca.objects.get(usuario=self.usuario).fim, first_expiration)
+
+    @patch('core.payments.MercadoPagoClient.get_payment')
+    def test_valor_divergente_nao_ativa_assinatura(self, get_payment):
+        payment = self.criar_pagamento()
+        get_payment.return_value = self.remote_payment(payment, transaction_amount='1.00')
+
+        resposta = self.enviar_webhook()
+
+        self.assertEqual(resposta.status_code, status.HTTP_200_OK, resposta.data)
+        payment.refresh_from_db()
+        self.assertEqual(payment.status, 'invalid')
+        self.assertEqual(payment.erro_codigo, 'payment_amount_mismatch')
+        self.assertFalse(Licenca.objects.filter(usuario=self.usuario).exists())
+
+    @patch('core.payments.MercadoPagoClient.get_payment')
+    def test_moeda_divergente_nao_ativa_assinatura(self, get_payment):
+        payment = self.criar_pagamento()
+        get_payment.return_value = self.remote_payment(payment, currency_id='USD')
+
+        resposta = self.enviar_webhook()
+
+        self.assertEqual(resposta.status_code, status.HTTP_200_OK, resposta.data)
+        payment.refresh_from_db()
+        self.assertEqual(payment.status, 'invalid')
+        self.assertEqual(payment.erro_codigo, 'payment_currency_mismatch')
+        self.assertFalse(Licenca.objects.filter(usuario=self.usuario).exists())
+
+    @patch('core.payments.MercadoPagoClient.get_payment')
+    def test_pagamento_de_outro_usuario_nao_altera_assinatura_errada(self, get_payment):
+        original_license = Licenca.objects.create(
+            usuario=self.usuario,
+            plano=self.plano,
+            status='canceled',
+            fim=timezone.now() + timedelta(days=5),
+        )
+        payment = self.criar_pagamento(usuario=self.outro_usuario)
+        get_payment.return_value = self.remote_payment(payment)
+
+        resposta = self.enviar_webhook()
+
+        self.assertEqual(resposta.status_code, status.HTTP_200_OK, resposta.data)
+        original_license.refresh_from_db()
+        self.assertEqual(original_license.status, 'canceled')
+        self.assertEqual(Licenca.objects.get(usuario=self.outro_usuario).status, 'active')
+
+    @patch('core.payments.MercadoPagoClient.get_payment')
+    def test_webhook_invalido_nao_altera_assinatura(self, get_payment):
+        payment = self.criar_pagamento()
+
+        resposta = self.enviar_webhook(headers={
+            'HTTP_X_SIGNATURE': 'ts=1704908010,v1=invalid',
+            'HTTP_X_REQUEST_ID': 'request-invalid',
+        })
+
+        self.assertEqual(resposta.status_code, status.HTTP_401_UNAUTHORIZED)
+        get_payment.assert_not_called()
+        payment.refresh_from_db()
+        self.assertEqual(payment.status, 'checkout_created')
+        self.assertFalse(Licenca.objects.filter(usuario=self.usuario).exists())
+
+    @patch('core.payments.MercadoPagoClient.get_payment')
+    def test_webhook_valido_funciona_sem_jwt_e_sem_token_csrf(self, get_payment):
+        payment = self.criar_pagamento()
+        get_payment.return_value = self.remote_payment(payment)
+        csrf_client = APIClient(enforce_csrf_checks=True)
+
+        resposta = csrf_client.post(
+            f'{self.webhook_url}?data.id=100001&type=payment',
+            {'type': 'payment', 'data': {'id': '100001'}},
+            format='json',
+            **self.webhook_headers('100001', 'request-no-csrf'),
+        )
+
+        self.assertEqual(resposta.status_code, status.HTTP_200_OK, resposta.data)
+        self.assertTrue(resposta.data['processed'])
+        self.assertEqual(Licenca.objects.get(usuario=self.usuario).status, 'active')
+
+    @patch('core.payments.MercadoPagoClient.get_payment')
+    def test_assinatura_ativada_por_pagamento_libera_diagnostico(self, get_payment):
+        payment = self.criar_pagamento()
+        get_payment.return_value = self.remote_payment(payment)
+        self.enviar_webhook()
+        self.autenticar()
+
+        resposta = self.client.post('/api/diagnosticos/', self.diagnostic_payload(), format='json')
+
+        self.assertEqual(resposta.status_code, status.HTTP_201_CREATED, resposta.data)
+
+    @patch('core.payments.MercadoPagoClient.get_payment')
+    def test_assinatura_nao_elegivel_continua_bloqueando_diagnostico(self, get_payment):
+        payment = self.criar_pagamento()
+        get_payment.return_value = self.remote_payment(payment, external_status='rejected')
+        self.enviar_webhook()
+        self.autenticar()
+
+        resposta = self.client.post('/api/diagnosticos/', self.diagnostic_payload(), format='json')
+
+        self.assertEqual(resposta.status_code, status.HTTP_403_FORBIDDEN, resposta.data)
+        self.assertEqual(resposta.data['code'], 'subscription_canceled')
+
+    @patch('core.payments.MercadoPagoClient.get_payment')
+    def test_falha_de_comunicacao_nao_ativa_assinatura(self, get_payment):
+        payment = self.criar_pagamento()
+        get_payment.side_effect = PaymentIntegrationError(
+            'mercado_pago_unavailable',
+            'Não foi possível comunicar com o Mercado Pago.',
+        )
+
+        resposta = self.enviar_webhook()
+
+        self.assertEqual(resposta.status_code, status.HTTP_502_BAD_GATEWAY, resposta.data)
+        payment.refresh_from_db()
+        self.assertEqual(payment.status, 'checkout_created')
+        self.assertFalse(Licenca.objects.filter(usuario=self.usuario).exists())
+
+    @patch('core.payments.MercadoPagoClient.create_preference')
+    def test_falha_ao_criar_checkout_fica_auditada_sem_ativar(self, create_preference):
+        create_preference.side_effect = PaymentIntegrationError(
+            'mercado_pago_unavailable',
+            'Não foi possível comunicar com o Mercado Pago.',
+        )
+        self.autenticar()
+
+        resposta = self.client.post(self.checkout_url, {'plano_id': self.plano.id}, format='json')
+
+        self.assertEqual(resposta.status_code, status.HTTP_502_BAD_GATEWAY, resposta.data)
+        payment = Pagamento.objects.get()
+        self.assertEqual(payment.status, 'failed')
+        self.assertFalse(Licenca.objects.filter(usuario=self.usuario).exists())
+
+    def test_pagamento_esta_registrado_no_admin(self):
+        self.assertTrue(admin.site.is_registered(Pagamento))
+
+    def test_consulta_da_assinatura_nao_expoe_pagamento_de_outro_usuario(self):
+        self.criar_pagamento(usuario=self.outro_usuario)
+        self.autenticar()
+
+        sem_pagamento_proprio = self.client.get('/api/assinatura/')
+        pagamento_proprio = self.criar_pagamento()
+        com_pagamento_proprio = self.client.get('/api/assinatura/')
+
+        self.assertIsNone(sem_pagamento_proprio.data['pagamento_recente'])
+        self.assertEqual(com_pagamento_proprio.data['pagamento_recente']['id'], pagamento_proprio.id)

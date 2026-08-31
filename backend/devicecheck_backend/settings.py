@@ -29,7 +29,14 @@ SECRET_KEY = os.environ.get('SECRET_KEY')
 # SECURITY WARNING: don't run with debug turned on in production!
 DEBUG = True
 
-ALLOWED_HOSTS = []
+
+def env_list(name, default=''):
+    return [item.strip() for item in os.environ.get(name, default).split(',') if item.strip()]
+
+
+# Informe somente hostnames, sem protocolo ou caminho. Em desenvolvimento, inclua
+# aqui via ambiente o hostname HTTPS atribuído pelo ngrok.
+ALLOWED_HOSTS = env_list('DJANGO_ALLOWED_HOSTS', '127.0.0.1,localhost')
 
 
 # Application definition
@@ -151,3 +158,14 @@ CORS_ALLOWED_ORIGINS = [
     "http://localhost:5173",
     "http://127.0.0.1:5173",
 ]
+
+# Mercado Pago: credenciais e URLs existem somente no backend.
+MERCADO_PAGO_ACCESS_TOKEN = os.environ.get('MERCADO_PAGO_ACCESS_TOKEN', '')
+MERCADO_PAGO_WEBHOOK_SECRET = os.environ.get('MERCADO_PAGO_WEBHOOK_SECRET', '')
+MERCADO_PAGO_SUCCESS_URL = os.environ.get('MERCADO_PAGO_SUCCESS_URL', '')
+MERCADO_PAGO_FAILURE_URL = os.environ.get('MERCADO_PAGO_FAILURE_URL', '')
+MERCADO_PAGO_PENDING_URL = os.environ.get('MERCADO_PAGO_PENDING_URL', '')
+MERCADO_PAGO_WEBHOOK_URL = os.environ.get('MERCADO_PAGO_WEBHOOK_URL', '')
+MERCADO_PAGO_USE_SANDBOX = os.environ.get('MERCADO_PAGO_USE_SANDBOX', 'true').lower() in {'1', 'true', 'yes'}
+MERCADO_PAGO_TIMEOUT_SECONDS = int(os.environ.get('MERCADO_PAGO_TIMEOUT_SECONDS', '10'))
+MERCADO_PAGO_LICENSE_DURATION_DAYS = int(os.environ.get('MERCADO_PAGO_LICENSE_DURATION_DAYS', '30'))

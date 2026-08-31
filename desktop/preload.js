@@ -22,4 +22,5 @@ contextBridge.exposeInMainWorld('diagpro', {
     'uninstall-user-app',
     { serial, packageName, confirmationToken, findingId },
   ),
+  openExternalCheckout: (url) => ipcRenderer.invoke('open-external-checkout', { url }),
 })

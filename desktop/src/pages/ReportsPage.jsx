@@ -2,7 +2,7 @@ import { useCallback, useEffect, useMemo, useState } from 'react'
 import {
   AlertTriangle, AppWindow, Battery, CalendarClock, CheckCircle2, ChevronRight,
   Clock3, Cpu, FileSearch, FileText, HardDrive, Loader2, RefreshCw, Search,
-  Link2, ShieldCheck, Smartphone, User, X,
+  Link2, ShieldAlert, ShieldCheck, Smartphone, User, X,
 } from 'lucide-react'
 import { associarClienteAoDiagnostico, listarDiagnosticos, obterDiagnostico } from '../services/diagnostics.js'
 import { listarClientes } from '../services/clients.js'
@@ -27,12 +27,26 @@ const STAGE_STATUS = {
 const FINDING_SEVERITY = {
   info: 'Informativo', low: 'Baixo', medium: 'Médio', high: 'Alto', critical: 'Crítico',
 }
+const SECURITY_RISK_LEVEL = {
+  low: 'Baixo risco observado', attention: 'Atenção', moderate: 'Risco moderado',
+  elevated: 'Risco elevado', very_high: 'Risco muito elevado',
+}
+const SECURITY_RISK_STATUS = {
+  calculated: 'Calculado', partial: 'Parcial', not_calculated: 'Não calculado',
+  insufficient_data: 'Dados insuficientes',
+}
 const REMEDIATION_STATUS = {
-  resolved: 'Resolvido', failed: 'Falha', not_verified: 'Não verificado',
+  remediation_pending: 'Correção pendente', resolved: 'Resolvido',
+  verification_failed: 'Verificação falhou', failed: 'Falha',
+  not_verified: 'Não verificado', inconclusive: 'Inconclusivo', canceled: 'Cancelado',
+  device_disconnected: 'Dispositivo desconectado', not_authorized: 'ADB não autorizado',
+  not_supported: 'Não suportado',
 }
 const TRANSITION_STATUS = {
-  executing: 'Executando', verifying: 'Verificando', resolved: 'Resolvido',
-  failed: 'Falha', not_verified: 'Não verificado',
+  remediation_pending: 'Correção pendente', executing: 'Executando', verifying: 'Verificando', resolved: 'Resolvido',
+  verification_failed: 'Verificação falhou', failed: 'Falha', not_verified: 'Não verificado',
+  inconclusive: 'Inconclusivo', canceled: 'Cancelado', device_disconnected: 'Dispositivo desconectado',
+  not_authorized: 'ADB não autorizado', not_supported: 'Não suportado',
 }
 const ACTION_LABELS = {
   uninstall_user_app: 'Desinstalação de aplicativo',
@@ -68,8 +82,34 @@ function technicalResult(diagnostic) {
 }
 
 function findingsFrom(diagnostic) {
+  if (diagnostic?.security_projection_available && Array.isArray(diagnostic?.security_findings)) {
+    return diagnostic.security_findings
+  }
   const findings = technicalResult(diagnostic)?.security?.findings
   return Array.isArray(findings) ? findings : []
+}
+
+function securityRiskFrom(diagnostic) {
+  if (diagnostic?.security_projection_available) {
+    return {
+      score: diagnostic.security_risk_score,
+      level: diagnostic.security_risk_level,
+      status: diagnostic.security_risk_status,
+      version: diagnostic.security_risk_version,
+    }
+  }
+  const technical = technicalResult(diagnostic)
+  return technical?.securityRisk || technical?.security?.securityRisk || null
+}
+
+function securityRiskValue(diagnostic) {
+  const risk = securityRiskFrom(diagnostic)
+  return Number.isFinite(risk?.score) ? `${risk.score}/100` : EMPTY_VALUE
+}
+
+function securitySchemaVersion(diagnostic) {
+  if (diagnostic?.security_projection_available) return diagnostic.security_schema_version
+  return technicalResult(diagnostic)?.security?.schemaVersion || null
 }
 
 function remediationsFrom(diagnostic) {
@@ -78,7 +118,7 @@ function remediationsFrom(diagnostic) {
 }
 
 function findingCount(diagnostic) {
-  const findings = technicalResult(diagnostic)?.security?.findings
+  const findings = findingsFrom(diagnostic)
   return Array.isArray(findings) ? findings.length : EMPTY_VALUE
 }
 
@@ -239,6 +279,7 @@ function ReportsPage({ accessToken, diagnosticId = null }) {
   const selected = detail.data
   const selectedFindings = findingsFrom(selected)
   const selectedRemediations = remediationsFrom(selected)
+  const selectedSecurityRisk = securityRiskFrom(selected)
   const selectedFindingsById = new Map(
     selectedFindings.filter((finding) => hasValue(finding?.id)).map((finding) => [finding.id, finding]),
   )
@@ -322,6 +363,8 @@ function ReportsPage({ accessToken, diagnosticId = null }) {
 
                 <section className="dp-report-detail-section"><h3><ShieldCheck size={16} /> Saúde do sistema</h3><div className="dp-report-detail-grid"><ResourceField label="Score" value={healthValue(selected)} /><ResourceField label="Classificação" value={showValue(selected.health_label)} /><ResourceField label="Explicação" value={showValue(selected.health_explanation)} /></div></section>
 
+                <section className="dp-report-detail-section"><h3><ShieldAlert size={16} /> Risco de segurança</h3><div className="dp-report-detail-grid"><ResourceField label="Score técnico" value={securityRiskValue(selected)} /><ResourceField label="Classificação" value={showValue(SECURITY_RISK_LEVEL[selectedSecurityRisk?.level] || selectedSecurityRisk?.level)} /><ResourceField label="Status" value={showValue(SECURITY_RISK_STATUS[selectedSecurityRisk?.status] || selectedSecurityRisk?.status)} /><ResourceField label="Versão da fórmula" value={showValue(selectedSecurityRisk?.version)} /><ResourceField label="Versão do schema" value={showValue(securitySchemaVersion(selected))} /></div></section>
+
                 <section className="dp-report-detail-section"><h3><Cpu size={16} /> Recursos</h3><div className="dp-report-resource-groups">
                   <div><h4><Battery size={14} /> Bateria</h4><ResourceField label="Nível" value={showValue(selected.bateria?.level, hasValue(selected.bateria?.level) ? '%' : '')} /><ResourceField label="Status" value={showValue(selected.bateria?.status)} /><ResourceField label="Fonte" value={showValue(selected.bateria?.source)} /></div>
                   <div><h4><HardDrive size={14} /> Armazenamento</h4><ResourceField label="Total" value={showValue(selected.armazenamento?.totalGb, hasValue(selected.armazenamento?.totalGb) ? ' GB' : '')} /><ResourceField label="Usado" value={showValue(selected.armazenamento?.usedGb, hasValue(selected.armazenamento?.usedGb) ? ' GB' : '')} /><ResourceField label="Livre" value={showValue(selected.armazenamento?.freeGb, hasValue(selected.armazenamento?.freeGb) ? ' GB' : '')} /></div>
@@ -342,6 +385,7 @@ function ReportsPage({ accessToken, diagnosticId = null }) {
                           </header>
                           {finding?.packageName && <code>{finding.packageName}</code>}
                           <p>{showValue(finding?.description)}</p>
+                          <div><span>Auditoria</span><strong>Regra: {showValue(finding?.ruleId)} · Confiança da evidência: {showValue(finding?.evidenceConfidence)} · Contribuição: {showValue(finding?.scoreContribution)} · Fórmula: {showValue(finding?.scorerVersion)}</strong></div>
                           <div><span>Recomendação registrada</span><strong>{showValue(finding?.recommendation)}</strong></div>
                         </article>
                       ))}

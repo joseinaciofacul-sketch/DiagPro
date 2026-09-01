@@ -9,6 +9,7 @@ from .views import (
     RelatorioViewSet,
     LicencaViewSet,
     DiagnosticoViewSet,
+    SecurityFindingViewSet,
     CurrentUserView,
     ChangePasswordView,
     PlanListView,
@@ -25,6 +26,7 @@ router.register(r'analises', AnaliseViewSet)
 router.register(r'relatorios', RelatorioViewSet)
 router.register(r'licencas', LicencaViewSet, basename='licenca')
 router.register(r'diagnosticos', DiagnosticoViewSet, basename='diagnostico')
+router.register(r'security/findings', SecurityFindingViewSet, basename='security-finding')
 
 urlpatterns = [
     path('me/', CurrentUserView.as_view(), name='current-user'),

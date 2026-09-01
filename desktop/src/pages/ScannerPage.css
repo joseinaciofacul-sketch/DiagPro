@@ -48,11 +48,23 @@
 .scanner-stages .scanner-stage-running { color: #2da6ff; }
 .scanner-stages .scanner-stage-unavailable { color: #f5b942; }
 .scanner-stages .scanner-stage-waiting { width: 9px; height: 9px; margin-left: 3px; border: 1px solid #52647a; border-radius: 50%; }
-.scanner-result-grid { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 10px; }
+.scanner-result-grid { display: grid; grid-template-columns: repeat(5, minmax(0, 1fr)); gap: 10px; }
 .scanner-result-grid > div { min-height: 120px; display: flex; flex-direction: column; gap: 5px; padding: 13px; border: 1px solid #213148; border-radius: 7px; background: #142233; color: #2da6ff; }
 .scanner-result-grid span { margin-top: 3px; color: #8798aa; font-size: 11px; }
 .scanner-result-grid strong { color: #eff5fb; font-size: 13px; line-height: 1.35; }
 .scanner-result-grid small { color: #6f8095; font-size: 10px; line-height: 1.4; }
+.scanner-security-risk-details { margin-top: 10px; border: 1px solid #27384d; border-radius: 7px; background: #101d2c; }
+.scanner-security-risk-details summary { padding: 10px 12px; color: #9ecff2; font-size: 11px; font-weight: 700; cursor: pointer; }
+.scanner-security-risk-details > p { margin: 0; padding: 0 12px 10px; color: #8192a6; font-size: 10px; line-height: 1.5; }
+.scanner-security-risk-breakdown { display: flex; flex-wrap: wrap; gap: 7px; padding: 0 12px 10px; }
+.scanner-security-risk-breakdown span { display: inline-flex; gap: 5px; padding: 5px 7px; border: 1px solid #2a3d54; border-radius: 5px; color: #9aabbd; font-size: 9px; }
+.scanner-security-risk-breakdown b { color: #d8e4ee; }
+.scanner-security-risk-factors { padding: 0 12px 11px; color: #9aabbd; font-size: 10px; }
+.scanner-security-risk-factors > b { color: #d8e4ee; }
+.scanner-security-risk-factors ul { margin: 6px 0 0; padding: 0; list-style: none; }
+.scanner-security-risk-factors li { display: flex; justify-content: space-between; gap: 10px; padding: 5px 0; border-top: 1px solid #223247; }
+.scanner-security-risk-factors li span { overflow-wrap: anywhere; }
+.scanner-security-risk-factors li strong { flex: 0 0 auto; color: #f0b45a; }
 .scanner-findings { margin-top: 14px; padding-top: 14px; border-top: 1px solid #1d2b3d; }
 .scanner-findings-heading, .scanner-findings-heading > div, .scanner-finding-title { display: flex; align-items: center; justify-content: space-between; gap: 9px; }
 .scanner-findings-heading > div { justify-content: flex-start; color: #2da6ff; }
@@ -95,6 +107,12 @@
 .scanner-remediation-status.status-failed strong { color: #ff8993; }
 .scanner-remediation-status.status-not_verified { border-color: #80662a; background: #292315; }
 .scanner-remediation-status.status-not_verified strong { color: #e7bf58; }
+.scanner-remediation-status.status-remediation_pending, .scanner-remediation-status.status-verifying, .scanner-remediation-status.status-inconclusive, .scanner-remediation-status.status-device_disconnected, .scanner-remediation-status.status-not_authorized, .scanner-remediation-status.status-not_supported { border-color: #80662a; background: #292315; }
+.scanner-remediation-status.status-remediation_pending strong, .scanner-remediation-status.status-verifying strong, .scanner-remediation-status.status-inconclusive strong, .scanner-remediation-status.status-device_disconnected strong, .scanner-remediation-status.status-not_authorized strong, .scanner-remediation-status.status-not_supported strong { color: #e7bf58; }
+.scanner-remediation-status.status-canceled { border-color: #4b5f75; background: #182331; }
+.scanner-remediation-status.status-canceled strong { color: #aebdcb; }
+.scanner-remediation-status.status-verification_failed { border-color: #7b3540; background: #2c171d; }
+.scanner-remediation-status.status-verification_failed strong { color: #ff8993; }
 .scanner-remediation-sync { width: 100%; display: grid; gap: 3px; padding: 7px 9px; border: 1px solid #2d4359; border-radius: 5px; background: #101c29; font-size: 10px; }
 .scanner-remediation-sync strong { color: #9fb3c7; text-transform: uppercase; }
 .scanner-remediation-sync span { color: #7f91a5; line-height: 1.45; }
@@ -132,5 +150,6 @@
 @media (max-width: 620px) { .scanner-license-state { grid-template-columns: 20px 1fr; } .scanner-license-state button { grid-column: 2; justify-self: start; } }
 .spin { animation: scanner-spin 1s linear infinite; }
 @keyframes scanner-spin { to { transform: rotate(360deg); } }
+@media (max-width: 1180px) { .scanner-result-grid { grid-template-columns: repeat(3, minmax(0, 1fr)); } }
 @media (max-width: 980px) { .scanner-workspace { grid-template-columns: 1fr; } .scanner-result-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); } }
 @media (max-width: 620px) { .scanner-module-grid, .scanner-result-grid { grid-template-columns: 1fr; } }

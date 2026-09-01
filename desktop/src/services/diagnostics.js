@@ -91,6 +91,20 @@ export async function salvarRemediacao(diagnosticoId, remediation, { accessToken
   return dados
 }
 
+export async function listarRemediacoes(diagnosticoId, { accessToken } = {}) {
+  if (!diagnosticoId) throw new Error('O diagnóstico é necessário para consultar as correções.')
+  const resposta = await fetchAutenticado(
+    `${DIAGNOSTICS_URL}${encodeURIComponent(diagnosticoId)}/remediations/`,
+    {},
+    accessToken,
+  )
+  const dados = await lerResposta(resposta)
+  if (!resposta.ok) {
+    throw criarErroApi(resposta, dados, 'Não foi possível consultar a auditoria de correções.')
+  }
+  return dados
+}
+
 export async function listarDiagnosticos({ accessToken } = {}) {
   const resposta = await fetchAutenticado(DIAGNOSTICS_URL, {}, accessToken)
   const dados = await lerResposta(resposta)

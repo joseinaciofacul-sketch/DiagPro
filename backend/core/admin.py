@@ -1,5 +1,8 @@
 from django.contrib import admin
-from .models import Empresa, Cliente, Dispositivo, Analise, Relatorio, Plano, Licenca, Pagamento
+from .models import (
+    Empresa, Cliente, Dispositivo, Analise, Relatorio, Plano, Licenca,
+    Pagamento, SecurityFinding,
+)
 
 admin.site.register(Empresa)
 admin.site.register(Cliente)
@@ -49,6 +52,32 @@ class PagamentoAdmin(admin.ModelAdmin):
         'status', 'provider_status', 'provider_status_detail', 'valor_esperado', 'moeda',
         'checkout_url', 'sandbox', 'webhook_count', 'ultimo_webhook_request_id',
         'erro_codigo', 'pago_em', 'ativado_em', 'criado_em', 'atualizado_em',
+    )
+
+    def has_add_permission(self, request):
+        return False
+
+    def has_delete_permission(self, request, obj=None):
+        return False
+
+
+@admin.register(SecurityFinding)
+class SecurityFindingAdmin(admin.ModelAdmin):
+    list_display = (
+        'id', 'diagnostico', 'rule_id', 'severity', 'category', 'status',
+        'evidence_confidence', 'score_contribution', 'created_at',
+    )
+    list_filter = ('severity', 'category', 'status', 'evidence_confidence')
+    search_fields = (
+        'rule_id', 'finding_id', 'subject_id', 'diagnostico__serial',
+        'diagnostico__usuario__username',
+    )
+    list_select_related = ('diagnostico', 'diagnostico__usuario')
+    readonly_fields = (
+        'diagnostico', 'finding_id', 'rule_id', 'category', 'subject_type',
+        'subject_id', 'title', 'summary', 'severity', 'evidence_confidence',
+        'recommendation', 'remediation_type', 'remediation_available', 'evidence',
+        'score_contribution', 'scorer_version', 'created_at', 'updated_at',
     )
 
     def has_add_permission(self, request):

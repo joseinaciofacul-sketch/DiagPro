@@ -1,4 +1,5 @@
 const { contextBridge, ipcRenderer } = require('electron')
+const crypto = require('crypto')
 
 function assinar(canal, callback) {
   if (typeof callback !== 'function') {
@@ -14,13 +15,23 @@ contextBridge.exposeInMainWorld('diagpro', {
   checkAdb: () => ipcRenderer.invoke('check-adb'),
   onDeviceStatus: (callback) => assinar('device-status-changed', callback),
   runDiagnostic: (serial) => ipcRenderer.invoke('run-diagnostic', { serial }),
-  startScan: ({ serial, mode, modules }) => ipcRenderer.invoke('start-scan', { serial, mode, modules }),
+  createScanId: () => crypto.randomUUID(),
+  startScan: ({ serial, mode, modules, scanId }) => ipcRenderer.invoke('start-scan', { serial, mode, modules, scanId }),
+  cancelScan: (scanId) => ipcRenderer.invoke('cancel-scan', { scanId }),
   onScanProgress: (callback) => assinar('scan-progress', callback),
+  onRemediationProgress: (callback) => assinar('remediation-progress', callback),
   getInstalledApps: ({ serial }) => ipcRenderer.invoke('get-installed-apps', { serial }),
-  getRemovalPreview: ({ serial, packageName }) => ipcRenderer.invoke('get-removal-preview', { serial, packageName }),
-  uninstallUserApp: ({ serial, packageName, confirmationToken, findingId }) => ipcRenderer.invoke(
+  getRemovalPreview: ({ serial, packageName, finding, action, projectionId }) => ipcRenderer.invoke(
+    'get-removal-preview',
+    { serial, packageName, finding, action, projectionId },
+  ),
+  uninstallUserApp: ({ serial, packageName, androidUserId, confirmationToken, actionId, findingId, projectionId }) => ipcRenderer.invoke(
     'uninstall-user-app',
-    { serial, packageName, confirmationToken, findingId },
+    { serial, packageName, androidUserId, confirmationToken, actionId, findingId, projectionId },
+  ),
+  cancelRemediation: ({ actionId, confirmationToken }) => ipcRenderer.invoke(
+    'cancel-remediation',
+    { actionId, confirmationToken },
   ),
   openExternalCheckout: (url) => ipcRenderer.invoke('open-external-checkout', { url }),
 })

@@ -1,52 +1,52 @@
-const {
-  analisarBuild,
-  analisarConfiguracoes,
-  analisarRoot,
-  analisarSecurityPatch,
-} = require('./securityRules')
-const { criarFindingAplicativo, criarPerfilRiscoAplicativo } = require('./appRiskAnalyzer')
-
-const SEVERITY_PRIORITY = Object.freeze({ info: 0, low: 1, medium: 2, high: 3, critical: 4 })
-const CONFIDENCE_PRIORITY = Object.freeze({ low: 0, medium: 1, high: 2 })
+const { analyzeObservations } = require('./observationAnalyzer')
+const { compareFindings, evaluateRules } = require('./ruleEngine')
 
 function ordenarFindings(a, b) {
-  const severityDifference = (SEVERITY_PRIORITY[b.severity] || 0) - (SEVERITY_PRIORITY[a.severity] || 0)
-  if (severityDifference !== 0) return severityDifference
-  const riskDifference = (b.risk?.score || 0) - (a.risk?.score || 0)
-  if (riskDifference !== 0) return riskDifference
-  return (CONFIDENCE_PRIORITY[b.confidence] || 0) - (CONFIDENCE_PRIORITY[a.confidence] || 0)
+  return compareFindings(a, b)
 }
 
-function analisarSeguranca({ security = null, apps = null, permissions = null } = {}, options = {}) {
-  const findings = []
-
-  if (security) {
-    findings.push(...analisarSecurityPatch(security.securityPatch, options))
-    findings.push(...analisarBuild(security))
-    findings.push(...analisarConfiguracoes(security))
-    findings.push(...analisarRoot(security.root))
+function createCompatibilityProfile(context, observations, findings) {
+  const appFindings = findings.filter((finding) => finding.subjectType === 'app' && finding.subjectId === context.subjectId)
+  const appObservations = observations.filter((observation) => observation.subjectType === 'app' && observation.subjectId === context.subjectId)
+  return {
+    packageName: context.subjectId,
+    identity: context.metadata.identity,
+    origin: context.metadata.origin,
+    integrity: context.metadata.integrity,
+    capabilities: context.metadata.capabilities,
+    signals: appObservations,
+    findings: appFindings.map((finding) => finding.id),
+    evidenceConfidence: appFindings[0]?.evidenceConfidence || 'low',
+    risk: {
+      status: 'pending_coverage',
+      score: null,
+      rawScore: null,
+      level: 'not_calculated',
+      confidence: null,
+      reasons: [],
+      reason: 'SECURITY_RISK_SCORE_REQUIRES_SCAN_COVERAGE',
+    },
   }
+}
 
-  const itens = Array.isArray(permissions?.items)
-    ? permissions.items
-    : Array.isArray(apps?.items)
-      ? apps.items
-      : []
-  const appRiskProfiles = itens
-    .filter((app) => app?.type === 'user')
-    .map(criarPerfilRiscoAplicativo)
-    .filter(Boolean)
-  appRiskProfiles.forEach((profile) => {
-    const finding = criarFindingAplicativo(profile)
-    if (finding) findings.push(finding)
-  })
+function analisarSeguranca(input = {}, options = {}) {
+  const analyzed = analyzeObservations(input, options)
+  const findings = evaluateRules(analyzed, { now: options.now || new Date() })
+  const appRiskProfiles = analyzed.appContexts
+    .filter((context) => context.facts.app.type === 'user')
+    .map((context) => createCompatibilityProfile(context, analyzed.observations, findings))
 
   return {
-    findings: findings.sort(ordenarFindings),
+    schemaVersion: '1.0',
+    analysisVersion: '3.0',
+    observations: analyzed.observations,
+    findings,
     appRiskProfiles,
-    // Score técnico prioriza investigação; sem evidência comportamental, não classifica ameaças.
+    confirmedThreats: [],
+    // Alias temporário para consumidores anteriores; não contém findings heurísticos.
     threats: [],
+    reputation: { status: 'not_configured', verdict: 'unknown' },
   }
 }
 
-module.exports = { analisarSeguranca, ordenarFindings }
+module.exports = { analisarSeguranca, createCompatibilityProfile, ordenarFindings }

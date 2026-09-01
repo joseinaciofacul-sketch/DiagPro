@@ -1,13 +1,14 @@
 const CAPABILITY_DEFINITIONS = Object.freeze({
-  SMS: { label: 'SMS', requestedWeight: 1, grantedWeight: 8 },
-  CONTACTS: { label: 'Contatos', requestedWeight: 1, grantedWeight: 5 },
-  CALLS: { label: 'Chamadas', requestedWeight: 1, grantedWeight: 8 },
-  LOCATION: { label: 'Localização', requestedWeight: 1, grantedWeight: 5 },
-  CAMERA: { label: 'Câmera', requestedWeight: 1, grantedWeight: 3 },
-  MICROPHONE: { label: 'Microfone', requestedWeight: 1, grantedWeight: 5 },
-  PACKAGE_INSTALL: { label: 'Instalação de pacotes', requestedWeight: 2, grantedWeight: 12 },
-  OVERLAY: { label: 'Sobreposição de tela', requestedWeight: 2, grantedWeight: 12 },
-  ACCESSIBILITY: { label: 'Acessibilidade', requestedWeight: 0, grantedWeight: 18 },
+  SMS: { label: 'SMS' },
+  CONTACTS: { label: 'Contatos' },
+  CALLS: { label: 'Chamadas' },
+  LOCATION: { label: 'Localização' },
+  CAMERA: { label: 'Câmera' },
+  MICROPHONE: { label: 'Microfone' },
+  BOOT: { label: 'Inicialização do sistema' },
+  PACKAGE_INSTALL: { label: 'Instalação de pacotes' },
+  OVERLAY: { label: 'Sobreposição de tela' },
+  ACCESSIBILITY: { label: 'Acessibilidade' },
 })
 
 const PERMISSION_CAPABILITIES = Object.freeze({
@@ -25,6 +26,7 @@ const PERMISSION_CAPABILITIES = Object.freeze({
   'android.permission.ACCESS_BACKGROUND_LOCATION': 'LOCATION',
   'android.permission.CAMERA': 'CAMERA',
   'android.permission.RECORD_AUDIO': 'MICROPHONE',
+  'android.permission.RECEIVE_BOOT_COMPLETED': 'BOOT',
   'android.permission.REQUEST_INSTALL_PACKAGES': 'PACKAGE_INSTALL',
   'android.permission.SYSTEM_ALERT_WINDOW': 'OVERLAY',
 })
@@ -50,12 +52,22 @@ function normalizarSinaisAplicativo(app) {
   permissions.forEach((permission) => {
     const capability = PERMISSION_CAPABILITIES[permission]
     if (!capability) return
+    const isSpecialCapability = capability === 'OVERLAY' || capability === 'PACKAGE_INSTALL'
+    const specialCapability = capability === 'OVERLAY'
+      ? details.specialCapabilities?.overlay
+      : capability === 'PACKAGE_INSTALL'
+        ? details.specialCapabilities?.installUnknownApps
+        : null
+    const state = isSpecialCapability
+      ? specialCapability?.effective === true ? 'effective' : 'requested'
+      : granted.has(permission) ? 'granted' : 'requested'
     signals.push({
-      type: 'permission',
+      type: isSpecialCapability ? 'special_capability' : 'permission',
       key: permission,
       capability,
-      state: granted.has(permission) ? 'granted' : 'requested',
-      source: 'adb_dumpsys_package',
+      state,
+      source: specialCapability?.source || 'adb_dumpsys_package',
+      evidenceConfidence: specialCapability?.status === 'available' ? 'high' : 'medium',
     })
   })
 
@@ -66,13 +78,14 @@ function normalizarSinaisAplicativo(app) {
       capability: 'ACCESSIBILITY',
       state: 'enabled',
       source: 'adb_settings',
+      evidenceConfidence: 'high',
     })
   }
   return signals
 }
 
 function derivarCapacidades(signals) {
-  const statePriority = { requested: 1, granted: 2, enabled: 3 }
+  const statePriority = { requested: 1, granted: 2, enabled: 3, effective: 3 }
   const byCapability = new Map()
 
   signals.forEach((signal) => {

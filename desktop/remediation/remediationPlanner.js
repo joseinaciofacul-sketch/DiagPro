@@ -37,7 +37,7 @@ function acaoBase(finding, overrides) {
     id: `remediation.${finding.id}`,
     findingId: finding.id,
     packageName: finding.packageName || null,
-    type: 'no_safe_action',
+    type: 'no_action',
     availability: 'not_available',
     state: 'not_available',
     title: 'Nenhuma correção automática segura',
@@ -52,10 +52,59 @@ function acaoBase(finding, overrides) {
   }
 }
 
+function findingRuleId(finding) {
+  return finding.ruleId || finding.id
+}
+
+function guideForFinding(finding) {
+  const ruleId = findingRuleId(finding)
+  if (ruleId?.startsWith('device.security_patch_age.')) return GUIDE_BY_FINDING['device.security_patch_age']
+  return GUIDE_BY_FINDING[ruleId] || null
+}
+
 function planejarRemediacaoFinding(finding, apps = []) {
   const app = finding.packageName
     ? apps.find((item) => item.packageName === finding.packageName)
     : null
+
+  const ruleId = findingRuleId(finding)
+  const isDeviceAdmin = ruleId?.includes('device_admin') || finding.category === 'device_administrator_context'
+  const involvesAccessibility = ruleId?.includes('accessibility')
+  const involvesOverlay = ruleId?.includes('overlay')
+
+  if (finding.packageName && (isDeviceAdmin || involvesAccessibility || involvesOverlay)) {
+    const type = isDeviceAdmin
+      ? 'manual_device_admin_review'
+      : involvesAccessibility
+        ? 'manual_accessibility_review'
+        : 'manual_overlay_review'
+    const guidance = isDeviceAdmin
+      ? 'Desative a administração do dispositivo nas configurações do Android somente após validar a finalidade do aplicativo. Depois, execute uma nova análise.'
+      : involvesAccessibility
+        ? 'Revise manualmente o serviço de acessibilidade no dispositivo. O DiagPro não desativa essa permissão automaticamente. Depois, execute uma nova análise.'
+        : 'Revise manualmente a permissão de sobreposição no Android. O DiagPro não altera AppOps automaticamente. Depois, execute uma nova análise.'
+    return acaoBase(finding, {
+      type,
+      availability: 'available',
+      state: 'available',
+      title: 'Revisar configuração manualmente',
+      description: 'Este achado exige revisão manual no Android antes de qualquer remoção.',
+      guidance,
+      reasonUnavailable: null,
+      verification: { type: 'rescan_after_manual_action', status: 'pending' },
+    })
+  }
+
+  if (finding.packageName && finding.remediation?.type === 'manual_guidance') {
+    return acaoBase(finding, {
+      type: 'manual_review', availability: 'available', state: 'available',
+      title: 'Revisar aplicativo manualmente',
+      description: 'Não existe alteração automática segura para este achado.',
+      guidance: finding.recommendation,
+      reasonUnavailable: null,
+      verification: { type: 'rescan_after_manual_action', status: 'pending' },
+    })
+  }
 
   if (finding.packageName) {
     if (app?.type === 'user' && pacoteValido(finding.packageName)) {
@@ -72,20 +121,27 @@ function planejarRemediacaoFinding(finding, apps = []) {
         reasonUnavailable: null,
       })
     }
+    if (app?.type === 'system') {
+      return acaoBase(finding, {
+        type: 'manual_review', availability: 'available', state: 'available',
+        title: 'Revisar aplicativo de sistema',
+        description: 'Aplicativos de sistema nunca são removidos automaticamente pelo DiagPro.',
+        guidance: 'Confirme a função do pacote com a documentação do fabricante. Não tente removê-lo pelo DiagPro.',
+        reasonUnavailable: null,
+        verification: { type: 'rescan_after_manual_action', status: 'pending' },
+      })
+    }
     return acaoBase(finding, {
-      description: app?.type === 'system'
-        ? 'Aplicativos de sistema não podem ser removidos pelo DiagPro.'
-        : 'O pacote não foi confirmado como aplicativo removível de usuário.',
-      reasonUnavailable: app?.type === 'system'
-        ? 'Aplicativo de sistema protegido.'
-        : 'Aplicativo de usuário não confirmado pelo Package Manager.',
+      description: 'O pacote não foi confirmado como aplicativo removível de usuário.',
+      reasonUnavailable: 'Aplicativo de usuário não confirmado pelo Package Manager.',
     })
   }
 
-  if (GUIDE_BY_FINDING[finding.id]) {
-    const guide = GUIDE_BY_FINDING[finding.id]
+  const findingGuide = guideForFinding(finding)
+  if (findingGuide) {
+    const guide = findingGuide
     return acaoBase(finding, {
-      type: 'guide_user',
+      type: 'manual_security_setting',
       availability: 'available',
       state: 'available',
       title: guide.title,
@@ -96,11 +152,13 @@ function planejarRemediacaoFinding(finding, apps = []) {
     })
   }
 
-  if (finding.id === 'device.su_binary_accessible') {
+  if (findingRuleId(finding) === 'device.su_binary_accessible') {
     return acaoBase(finding, {
+      type: 'manual_review', availability: 'available', state: 'available',
       description: 'Remover root sem conhecer o método utilizado pode danificar o sistema ou impedir a inicialização.',
       reasonUnavailable: 'A remoção de root exige análise técnica específica e não é segura para automação.',
       guidance: 'Confirme se a alteração foi intencional. Quando necessário, utilize o procedimento oficial do fabricante para restaurar o firmware.',
+      verification: { type: 'rescan_after_manual_action', status: 'pending' },
     })
   }
 
@@ -113,6 +171,8 @@ function planejarRemediacoes(findings = [], apps = []) {
 
 module.exports = {
   GUIDE_BY_FINDING,
+  findingRuleId,
+  guideForFinding,
   pacoteValido,
   planejarRemediacaoFinding,
   planejarRemediacoes,

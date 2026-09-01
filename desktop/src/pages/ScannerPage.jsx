@@ -58,29 +58,49 @@ const SEVERIDADES = {
   critical: 'Crítico',
 }
 
-const NIVEIS_RISCO = {
-  minimal: 'Mínimo',
-  low: 'Baixo',
-  moderate: 'Moderado',
-  high: 'Alto',
-  critical: 'Crítico',
-}
-
 const NIVEIS_CONFIANCA = {
   low: 'Baixa',
   medium: 'Média',
   high: 'Alta',
 }
 
+const STATUS_RISCO_SEGURANCA = {
+  calculated: 'Calculado',
+  partial: 'Parcial',
+  not_calculated: 'Não calculado',
+  insufficient_data: 'Dados insuficientes',
+}
+
 const STATUS_REMEDIACAO = {
   available: 'Disponível',
   preparing: 'Preparando preview...',
   awaiting_confirmation: 'Aguardando confirmação',
-  executing: 'Executando e verificando...',
+  remediation_pending: 'Correção pendente',
+  executing: 'Executando...',
+  verifying: 'Verificando resultado...',
+  cancel_requested: 'Cancelamento solicitado',
   resolved: 'Resolvido nesta sessão',
+  verification_failed: 'Verificação falhou',
   failed: 'Falha na correção',
   not_verified: 'Correção não verificada',
+  inconclusive: 'Resultado inconclusivo',
+  canceled: 'Correção cancelada',
+  device_disconnected: 'Dispositivo desconectado',
+  not_authorized: 'ADB não autorizado',
+  not_supported: 'Ação não suportada',
   not_available: 'Sem correção automática segura',
+}
+
+const MANUAL_ACTION_TYPES = new Set([
+  'guide_user', 'manual_review', 'manual_security_setting',
+  'manual_device_admin_review', 'manual_accessibility_review', 'manual_overlay_review',
+])
+
+function projectionIdForFinding(diagnostic, findingId) {
+  const projection = Array.isArray(diagnostic?.security_findings)
+    ? diagnostic.security_findings.find((item) => item?.id === findingId)
+    : null
+  return projection?.projection_id || null
 }
 
 const STATUS_SINCRONIZACAO = {
@@ -95,6 +115,11 @@ function valor(valorRecebido, sufixo = '') {
 }
 
 function formatarEvidencia(evidence) {
+  if (Array.isArray(evidence)) return evidence.map((item) => {
+    const dado = item?.value
+    const exibicao = dado && typeof dado === 'object' ? JSON.stringify(dado) : String(dado ?? '')
+    return `${item?.key || item?.observationId || 'evidence'}: ${exibicao}`
+  }).join(' · ')
   if (!evidence || typeof evidence !== 'object') return 'Evidência técnica não detalhada.'
   return Object.entries(evidence).map(([chave, dado]) => {
     const exibicao = Array.isArray(dado)
@@ -129,8 +154,13 @@ function ScannerPage({ accessToken, onNavigate }) {
   const [openGuides, setOpenGuides] = useState({})
   const scanAtivoRef = useRef(null)
   const proximoScanIdRef = useRef(0)
-  const persistenciaDiagnosticoRef = useRef({ scanId: 0, id: null, promise: null })
+  const persistenciaDiagnosticoRef = useRef({ scanId: 0, id: null, data: null, promise: null })
+  const remediationActionBindingsRef = useRef({})
   const findings = Array.isArray(resultado?.security?.findings) ? resultado.security.findings : []
+  const securityRisk = resultado?.securityRisk || resultado?.security?.securityRisk || null
+  const confirmedThreats = Array.isArray(resultado?.security?.confirmedThreats)
+    ? resultado.security.confirmedThreats
+    : []
   const remediationActions = Array.isArray(resultado?.security?.remediationActions)
     ? resultado.security.remediationActions
     : []
@@ -164,6 +194,7 @@ function ScannerPage({ accessToken, onNavigate }) {
     const unsubscribe = window.diagpro.onScanProgress((evento) => {
       const scanAtivo = scanAtivoRef.current
       if (!scanAtivo?.valido) return
+      if (evento?.scanId && evento.scanId !== scanAtivo.id) return
 
       setProgresso(evento)
 
@@ -189,11 +220,26 @@ function ScannerPage({ accessToken, onNavigate }) {
   }, [])
 
   useEffect(() => {
+    if (!window.diagpro?.onRemediationProgress) return undefined
+    return window.diagpro.onRemediationProgress((event) => {
+      if (!event?.actionId || !event?.status) return
+      const plannerActionId = remediationActionBindingsRef.current[event.actionId] || event.actionId
+      setRemediationStates((current) => ({
+        ...current,
+        [plannerActionId]: { ...current[plannerActionId], status: event.status },
+      }))
+    })
+  }, [])
+
+  useEffect(() => {
     const scanAtivo = scanAtivoRef.current
     const perdeuDispositivoDoScan = scanAtivo?.valido
       && (dispositivo.status !== 'connected' || dispositivo.serial !== scanAtivo.serial)
 
     if (perdeuDispositivoDoScan) {
+      if (typeof window.diagpro?.cancelScan === 'function') {
+        void window.diagpro.cancelScan(scanAtivo.id)
+      }
       scanAtivo.valido = false
       scanAtivo.interrompido = true
       setCarregando(false)
@@ -247,10 +293,14 @@ function ScannerPage({ accessToken, onNavigate }) {
 
   function registrarAuditoria(remediation) {
     if (!remediation) return
-    setResultado((atual) => atual ? {
-      ...atual,
-      remediations: [...(atual.remediations || []), remediation],
-    } : atual)
+    setResultado((atual) => {
+      if (!atual) return atual
+      const remediations = [...(atual.remediations || [])]
+      const existingIndex = remediations.findIndex((item) => item?.executionId === remediation.executionId)
+      if (existingIndex >= 0) remediations[existingIndex] = remediation
+      else remediations.push(remediation)
+      return { ...atual, remediations }
+    })
   }
 
   async function persistirAuditoriaRemediacao(actionId, remediation) {
@@ -260,7 +310,7 @@ function ScannerPage({ accessToken, onNavigate }) {
         'not_available',
         'O executor não retornou uma auditoria identificável para sincronização.',
       )
-      return
+      return null
     }
 
     const binding = persistenciaDiagnosticoRef.current
@@ -271,6 +321,7 @@ function ScannerPage({ accessToken, onNavigate }) {
         const diagnostico = await binding.promise
         if (persistenciaDiagnosticoRef.current !== binding) return
         diagnosticoId = diagnostico?.id
+        binding.data = diagnostico
       } catch {
         diagnosticoId = null
       }
@@ -283,18 +334,22 @@ function ScannerPage({ accessToken, onNavigate }) {
         'not_available',
         'A correção foi mantida nesta sessão, pois o diagnóstico não possui ID salvo.',
       )
-      return
+      return null
     }
 
+    const projectionId = remediation.projectionId
+      || projectionIdForFinding(binding.data, remediation.findingId)
+    const payload = projectionId ? { ...remediation, projectionId } : remediation
     atualizarSincronizacaoRemediacao(actionId, 'saving', 'Enviando o registro técnico da correção.')
     try {
-      const resposta = await salvarRemediacao(diagnosticoId, remediation, { accessToken })
+      const resposta = await salvarRemediacao(diagnosticoId, payload, { accessToken })
       if (persistenciaDiagnosticoRef.current !== binding) return
       atualizarSincronizacaoRemediacao(
         actionId,
         'saved',
         resposta?.duplicate ? 'Este registro já estava salvo no histórico.' : `Vinculada ao diagnóstico #${diagnosticoId}.`,
       )
+      return resposta
     } catch {
       if (persistenciaDiagnosticoRef.current !== binding) return
       atualizarSincronizacaoRemediacao(
@@ -302,6 +357,7 @@ function ScannerPage({ accessToken, onNavigate }) {
         'failed',
         'A correção não será repetida; apenas o registro no histórico falhou.',
       )
+      return null
     }
   }
 
@@ -321,11 +377,31 @@ function ScannerPage({ accessToken, onNavigate }) {
       const preview = await api.getRemovalPreview({
         serial: dispositivo.serial,
         packageName: finding.packageName,
+        finding: {
+          id: finding.id,
+          ruleId: finding.ruleId,
+          category: finding.category,
+          subjectType: finding.subjectType,
+          packageName: finding.packageName,
+          status: finding.status,
+          title: finding.title,
+          severity: finding.severity,
+          evidenceConfidence: finding.evidenceConfidence,
+        },
+        action: { type: action.type, availability: action.availability },
+        projectionId: projectionIdForFinding(persistenciaDiagnosticoRef.current.data, finding.id),
       })
-      if (preview?.ok !== true || preview.removable !== true || !preview.confirmationToken) {
+      if (
+        preview?.ok !== true
+        || preview.removable !== true
+        || !preview.confirmationToken
+        || !preview.actionId
+        || !Number.isInteger(preview.currentUserId)
+      ) {
         atualizarEstadoRemediacao(action.id, 'failed', preview?.message || 'O aplicativo não está disponível para remoção segura.')
         return
       }
+      remediationActionBindingsRef.current[preview.actionId] = action.id
       atualizarEstadoRemediacao(action.id, 'awaiting_confirmation')
       setRemediationModal({ finding, action, preview, confirmationToken: preview.confirmationToken })
     } catch {
@@ -334,9 +410,26 @@ function ScannerPage({ accessToken, onNavigate }) {
   }
 
   function cancelarPreviewRemocao() {
-    if (!remediationModal || remediationStates[remediationModal.action.id]?.status === 'executing') return
+    if (!remediationModal || ['remediation_pending', 'executing', 'verifying', 'cancel_requested'].includes(remediationStates[remediationModal.action.id]?.status)) return
+    if (typeof window.diagpro?.cancelRemediation === 'function') {
+      void window.diagpro.cancelRemediation({
+        actionId: remediationModal.preview.actionId,
+        confirmationToken: remediationModal.confirmationToken,
+      })
+    }
     atualizarEstadoRemediacao(remediationModal.action.id, 'available')
+    delete remediationActionBindingsRef.current[remediationModal.preview.actionId]
     setRemediationModal(null)
+  }
+
+  async function solicitarCancelamentoRemocao() {
+    const modal = remediationModal
+    if (!modal?.preview?.actionId || typeof window.diagpro?.cancelRemediation !== 'function') return
+    atualizarEstadoRemediacao(modal.action.id, 'cancel_requested', 'O DiagPro interromperá a operação se o comando ainda não tiver sido disparado.')
+    await window.diagpro.cancelRemediation({
+      actionId: modal.preview.actionId,
+      confirmationToken: modal.confirmationToken,
+    })
   }
 
   async function confirmarRemocao() {
@@ -348,46 +441,80 @@ function ScannerPage({ accessToken, onNavigate }) {
       || typeof api?.uninstallUserApp !== 'function'
     ) return
 
+    const startedAt = new Date().toISOString()
+    const projectionId = projectionIdForFinding(
+      persistenciaDiagnosticoRef.current.data,
+      modal.finding.id,
+    ) || modal.preview.auditContext?.projectionId || null
+    const pendingAudit = {
+      ...modal.preview.auditContext,
+      executionId: modal.preview.actionId,
+      actionId: modal.preview.actionId,
+      findingId: modal.finding.id,
+      projectionId,
+      startedAt,
+      finishedAt: null,
+      status: 'remediation_pending',
+      actionDispatched: false,
+      transitions: [{ status: 'remediation_pending', at: startedAt }],
+      adbResult: null,
+      verification: {
+        status: 'not_verified', installed: null, source: 'package_manager',
+        user: modal.preview.currentUserId,
+      },
+      error: null,
+    }
+    registrarAuditoria(pendingAudit)
+    atualizarEstadoRemediacao(modal.action.id, 'remediation_pending', 'A confirmação foi registrada; o dispositivo será revalidado antes da remoção.')
+    await persistirAuditoriaRemediacao(modal.action.id, pendingAudit)
     atualizarEstadoRemediacao(modal.action.id, 'executing')
     try {
       const result = await api.uninstallUserApp({
         serial: dispositivo.serial,
         packageName: modal.finding.packageName,
+        androidUserId: modal.preview.currentUserId,
         confirmationToken: modal.confirmationToken,
+        actionId: modal.preview.actionId,
         findingId: modal.finding.id,
+        projectionId,
       })
-      const status = ['resolved', 'failed', 'not_verified'].includes(result?.status)
-        ? result.status
-        : result?.ok
-          ? 'not_verified'
-          : 'failed'
+      const status = result?.remediation?.status || (result?.ok ? 'inconclusive' : 'failed')
+      const fallbackFinishedAt = new Date().toISOString()
       const remediation = result?.remediation || {
+        ...pendingAudit,
         findingId: modal.finding.id,
         action: 'uninstall_user_app',
         packageName: modal.finding.packageName,
-        startedAt: new Date().toISOString(),
-        finishedAt: new Date().toISOString(),
+        finishedAt: fallbackFinishedAt,
         status,
+        actionDispatched: false,
+        transitions: [...pendingAudit.transitions, { status, at: fallbackFinishedAt }],
+        adbResult: { status, code: result?.code || 'UNINSTALL_FAILED', output: null, actionDispatched: false },
         verification: result?.verification || { status: 'not_verified', installed: null },
+        error: { code: result?.code || 'UNINSTALL_FAILED', message: result?.message || 'Não foi possível executar a remoção.' },
       }
       registrarAuditoria(remediation)
       atualizarEstadoRemediacao(modal.action.id, status, result?.message || '')
       void persistirAuditoriaRemediacao(modal.action.id, remediation)
-    } catch {
+    } catch (error) {
       const now = new Date().toISOString()
       const remediation = {
+        ...pendingAudit,
         findingId: modal.finding.id,
         action: 'uninstall_user_app',
         packageName: modal.finding.packageName,
-        startedAt: now,
         finishedAt: now,
         status: 'failed',
+        transitions: [...pendingAudit.transitions, { status: 'failed', at: now }],
+        adbResult: { status: 'failed', code: 'IPC_REMEDIATION_FAILED', output: null, actionDispatched: false },
         verification: { status: 'not_verified', installed: null },
+        error: { code: 'IPC_REMEDIATION_FAILED', message: error?.message || 'Não foi possível executar a remoção.' },
       }
       registrarAuditoria(remediation)
       atualizarEstadoRemediacao(modal.action.id, 'failed', 'Não foi possível executar a remoção.')
       void persistirAuditoriaRemediacao(modal.action.id, remediation)
     } finally {
+      delete remediationActionBindingsRef.current[modal.preview.actionId]
       setRemediationModal(null)
     }
   }
@@ -401,20 +528,25 @@ function ScannerPage({ accessToken, onNavigate }) {
     const capability = await verificarLicenca()
     if (!capability?.allowed || dispositivo.status !== 'connected') return
 
+    const scanSequence = proximoScanIdRef.current + 1
+    const scanId = typeof window.diagpro.createScanId === 'function'
+      ? window.diagpro.createScanId()
+      : `scan-${Date.now()}-${scanSequence}`
     const scanAtual = {
-      id: proximoScanIdRef.current + 1,
+      id: scanId,
       serial: dispositivo.serial,
       valido: true,
       interrompido: false,
     }
-    proximoScanIdRef.current = scanAtual.id
+    proximoScanIdRef.current = scanSequence
     scanAtivoRef.current = scanAtual
     setCarregando(true)
     setErro('')
     setInterrompido(false)
     setResultado(null)
     setPersistencia({ status: 'idle', id: null })
-    persistenciaDiagnosticoRef.current = { scanId: scanAtual.id, id: null, promise: null }
+    persistenciaDiagnosticoRef.current = { scanId: scanAtual.id, id: null, data: null, promise: null }
+    remediationActionBindingsRef.current = {}
     setRemediationStates({})
     setRemediationModal(null)
     setOpenGuides({})
@@ -423,6 +555,7 @@ function ScannerPage({ accessToken, onNavigate }) {
 
     try {
       const resposta = await window.diagpro.startScan({
+        scanId: scanAtual.id,
         serial: dispositivo.serial,
         mode: modo,
         modules: modo === 'custom' ? modulos : undefined,
@@ -453,12 +586,14 @@ function ScannerPage({ accessToken, onNavigate }) {
       const bindingPersistencia = {
         scanId: scanAtual.id,
         id: null,
+        data: null,
         promise: promisePersistencia,
       }
       persistenciaDiagnosticoRef.current = bindingPersistencia
       promisePersistencia.then((diagnostico) => {
         if (persistenciaDiagnosticoRef.current !== bindingPersistencia) return
         bindingPersistencia.id = diagnostico.id
+        bindingPersistencia.data = diagnostico
         setPersistencia({ status: 'saved', id: diagnostico.id })
       }).catch((error) => {
         if (persistenciaDiagnosticoRef.current !== bindingPersistencia) return
@@ -566,14 +701,42 @@ function ScannerPage({ accessToken, onNavigate }) {
             <div><MemoryStick size={22} /><span>Memória RAM</span><strong>{valor(resultado.memory?.availableGb, ' GB')} disponíveis</strong><small>Total: {valor(resultado.memory?.totalGb, ' GB')}</small></div>
             <div><AppWindow size={22} /><span>Aplicativos</span><strong>{valor(resultado.apps?.total)}</strong><small>{resultado.apps ? `${resultado.apps.userTotal} do usuário e ${resultado.apps.systemTotal} do sistema` : 'Módulo não executado'}</small></div>
             <div><ShieldCheck size={22} /><span>Saúde do sistema</span><strong>{resultado.health?.available ? `${resultado.health.score}% — ${resultado.health.label}` : 'Não calculada'}</strong><small>{resultado.health?.explanation || 'Dados insuficientes'}</small></div>
+            <div><AlertTriangle size={22} /><span>Risco de Segurança</span><strong>{Number.isFinite(securityRisk?.score) ? `${securityRisk.score}/100 — ${securityRisk.label}` : STATUS_RISCO_SEGURANCA[securityRisk?.status] || 'Não calculado'}</strong><small>{securityRisk?.explanation || 'O scan não produziu cobertura suficiente para calcular o risco técnico.'}</small></div>
           </div>
+          {securityRisk && (
+            <details className="scanner-security-risk-details">
+              <summary>Ver detalhes do Risco de Segurança</summary>
+              <p>{securityRisk.meaning}</p>
+              <div className="scanner-security-risk-breakdown">
+                <span><b>Dispositivo/configuração</b>{securityRisk.breakdown?.deviceRisk ?? 0}</span>
+                <span><b>Aplicativos</b>{securityRisk.breakdown?.appRisk ?? 0}</span>
+                <span><b>Ameaças confirmadas</b>{securityRisk.breakdown?.confirmedThreatRisk ?? 0}</span>
+                <span><b>Cobertura</b>{securityRisk.coverage?.coveragePercent ?? 0}% · {securityRisk.coverage?.status || 'não disponível'}</span>
+                <span><b>Fórmula</b>v{securityRisk.version}</span>
+              </div>
+              {securityRisk.factors?.length > 0 ? (
+                <div className="scanner-security-risk-factors">
+                  <b>Principais fatores</b>
+                  <ul>{securityRisk.factors.slice(0, 8).map((factor) => (
+                    <li key={`${factor.findingId}-${factor.subjectId}`}>
+                      <span>{factor.ruleId}{factor.subjectType === 'app' ? ` · ${factor.subjectId}` : ''}</span>
+                      <strong>+{factor.contribution}</strong>
+                    </li>
+                  ))}</ul>
+                </div>
+              ) : (
+                <p>Nenhum finding contribuiu diretamente para o score.</p>
+              )}
+            </details>
+          )}
           <div className="scanner-findings">
             <div className="scanner-findings-heading">
               <div><ShieldCheck size={18} /><strong>ACHADOS DE SEGURANÇA</strong></div>
               <span>{findings.length}</span>
             </div>
+            <p className="scanner-findings-empty">Ameaças confirmadas: {confirmedThreats.length}. {confirmedThreats.length === 0 ? 'Nenhuma ameaça foi confirmada pelas evidências disponíveis.' : 'Consulte as evidências confirmadas registradas.'}</p>
             {findings.length === 0 ? (
-              <p className="scanner-findings-empty">Nenhum achado de segurança foi identificado pelas verificações disponíveis.</p>
+              <p className="scanner-findings-empty">Nenhum achado para revisão foi identificado pelas verificações disponíveis.</p>
             ) : (
               <div className="scanner-findings-list">
                 {findings.map((finding, index) => {
@@ -581,7 +744,7 @@ function ScannerPage({ accessToken, onNavigate }) {
                   const remediationState = action
                     ? remediationStates[action.id] || { status: action.state || action.availability }
                     : null
-                  const actionBusy = ['preparing', 'awaiting_confirmation', 'executing', 'verifying'].includes(remediationState?.status)
+                  const actionBusy = ['preparing', 'awaiting_confirmation', 'remediation_pending', 'executing', 'verifying', 'cancel_requested'].includes(remediationState?.status)
                   return (
                   <article className={`scanner-finding severity-${finding.severity || 'info'}`} key={`${finding.id}-${index}`}>
                     <div className="scanner-finding-title">
@@ -589,20 +752,20 @@ function ScannerPage({ accessToken, onNavigate }) {
                       <span>{SEVERIDADES[finding.severity] || finding.severity || 'Informativo'}</span>
                     </div>
                     {finding.packageName && <code>{finding.packageName}</code>}
-                    <p>{finding.description}</p>
-                    {finding.packageName && finding.risk && (
+                    <p>{finding.summary || finding.description}</p>
+                    {finding.evidenceConfidence && (
                       <div className="scanner-finding-risk">
-                        <span><b>Risco técnico</b>{NIVEIS_RISCO[finding.risk.level] || finding.risk.level} · {finding.risk.score}/100</span>
-                        <span><b>Confiança</b>{NIVEIS_CONFIANCA[finding.risk.confidence] || finding.risk.confidence}</span>
+                        <span><b>Severidade</b>{SEVERIDADES[finding.severity] || finding.severity}</span>
+                        <span><b>Confiança da evidência</b>{NIVEIS_CONFIANCA[finding.evidenceConfidence] || finding.evidenceConfidence}</span>
                       </div>
                     )}
                     {finding.capabilities?.length > 0 && (
                       <small><b>Capacidades:</b> {finding.capabilities.map((capability) => capability.label).join(', ')}</small>
                     )}
-                    {finding.risk?.reasons?.length > 0 && (
+                    {finding.technicalExplanation && (
                       <div className="scanner-finding-reasons">
-                        <b>Motivos:</b>
-                        <ul>{finding.risk.reasons.map((reason) => <li key={reason.id}>{reason.message}</li>)}</ul>
+                        <b>Explicação técnica:</b>
+                        <p>{finding.technicalExplanation}</p>
                       </div>
                     )}
                     {finding.packageName && (finding.identity || finding.origin || finding.integrity) && (
@@ -622,7 +785,7 @@ function ScannerPage({ accessToken, onNavigate }) {
                     <small><b>Recomendação:</b> {finding.recommendation}</small>
                     {action && (
                       <div className="scanner-remediation">
-                        {remediationState?.status && remediationState.status !== 'available' && action.type !== 'no_safe_action' && (
+                        {remediationState?.status && remediationState.status !== 'available' && !['no_safe_action', 'no_action'].includes(action.type) && (
                           <div className={`scanner-remediation-status status-${remediationState.status}`}>
                             <strong>{STATUS_REMEDIACAO[remediationState.status] || remediationState.status}</strong>
                             {remediationState.message && <span>{remediationState.message}</span>}
@@ -642,7 +805,7 @@ function ScannerPage({ accessToken, onNavigate }) {
                         {action.type === 'uninstall_user_app' && actionBusy && (
                           <button disabled><Loader2 size={14} className="spin" />{STATUS_REMEDIACAO[remediationState.status]}</button>
                         )}
-                        {action.type === 'guide_user' && (
+                        {MANUAL_ACTION_TYPES.has(action.type) && (
                           <>
                             <button onClick={() => setOpenGuides((atuais) => ({ ...atuais, [action.id]: !atuais[action.id] }))}>
                               <Wrench size={14} /> Como corrigir
@@ -651,20 +814,20 @@ function ScannerPage({ accessToken, onNavigate }) {
                               <div className="scanner-remediation-guide">
                                 <strong>{action.title}</strong>
                                 <p>{action.guidance}</p>
-                                <button onClick={iniciarDiagnostico} disabled={!podeIniciar}><RotateCcw size={13} /> Verificar novamente</button>
+                                <button onClick={iniciarDiagnostico} disabled={!podeIniciar}><RotateCcw size={13} /> Executar nova análise</button>
                               </div>
                             )}
                           </>
                         )}
-                        {action.type === 'no_safe_action' && (
+                        {['no_safe_action', 'no_action'].includes(action.type) && (
                           <div className="scanner-remediation-unavailable">
                             <strong>Sem correção automática segura</strong>
                             <span>{action.reasonUnavailable}</span>
                             {action.guidance && <span>{action.guidance}</span>}
                           </div>
                         )}
-                        {remediationState?.status === 'resolved' && (
-                          <button onClick={iniciarDiagnostico} disabled={!podeIniciar}><RotateCcw size={14} /> Verificar novamente</button>
+                        {['resolved', 'verification_failed', 'inconclusive', 'failed', 'canceled', 'device_disconnected'].includes(remediationState?.status) && (
+                          <button onClick={iniciarDiagnostico} disabled={!podeIniciar}><RotateCcw size={14} /> Executar nova análise</button>
                         )}
                       </div>
                     )}
@@ -688,22 +851,36 @@ function ScannerPage({ accessToken, onNavigate }) {
           <section className="scanner-remediation-modal" role="dialog" aria-modal="true" aria-labelledby="scanner-remediation-title">
             <header>
               <div><Trash2 size={18} /><h2 id="scanner-remediation-title">Confirmar remoção do aplicativo</h2></div>
-              <button onClick={cancelarPreviewRemocao} disabled={remediationStates[remediationModal.action.id]?.status === 'executing'} aria-label="Fechar confirmação"><X size={17} /></button>
+              <button onClick={cancelarPreviewRemocao} disabled={['remediation_pending', 'executing', 'verifying', 'cancel_requested'].includes(remediationStates[remediationModal.action.id]?.status)} aria-label="Fechar confirmação"><X size={17} /></button>
             </header>
             <div className="scanner-remediation-preview">
+              <div><span>Dispositivo</span><strong>{[remediationModal.preview.preview?.device?.manufacturer, remediationModal.preview.preview?.device?.model].filter(Boolean).join(' ') || 'Dispositivo Android'} · {remediationModal.preview.preview?.device?.serial || dispositivo.serial}</strong></div>
+              <div><span>Aplicativo</span><strong>{remediationModal.preview.preview?.app?.name || 'Nome não disponível'}</strong></div>
               <div><span>Pacote</span><strong>{remediationModal.finding.packageName}</strong></div>
+              <div><span>Tipo</span><strong>Aplicativo do usuário</strong></div>
+              <div><span>Usuário Android</span><strong>{remediationModal.preview.currentUserId}</strong></div>
               <div><span>Motivo da atenção</span><strong>{remediationModal.finding.title}</strong></div>
-              <div><span>Risco técnico</span><strong>{remediationModal.finding.risk ? `${NIVEIS_RISCO[remediationModal.finding.risk.level] || remediationModal.finding.risk.level} · ${remediationModal.finding.risk.score}/100` : 'Não aplicável'}</strong></div>
+              <div><span>Classificação do achado</span><strong>{SEVERIDADES[remediationModal.finding.severity] || remediationModal.finding.severity || 'Informativo'} · confiança da evidência {NIVEIS_CONFIANCA[remediationModal.finding.evidenceConfidence] || remediationModal.finding.evidenceConfidence || 'não informada'}</strong></div>
               <div><span>Evidências principais</span><strong>{formatarEvidencia(remediationModal.finding.evidence)}</strong></div>
               <div><span>Ação</span><strong>Desinstalar aplicativo de usuário</strong></div>
               <div><span>Impacto</span><strong>{remediationModal.preview.impact || remediationModal.action.impact}</strong></div>
+              <div><span>Reversibilidade</span><strong>{remediationModal.preview.preview?.reversible ? 'Reversível' : 'Não garantida; pode exigir nova instalação'}</strong></div>
+              <div><span>Confirmação</span><strong>Obrigatória e válida somente para este preview</strong></div>
+              <div><span>Riscos</span><strong>{remediationModal.preview.preview?.risks?.join(' ') || 'Dados locais do aplicativo podem ser perdidos.'}</strong></div>
+              <div><span>Verificação posterior</span><strong>{remediationModal.preview.preview?.verification?.description || 'O DiagPro verificará a ausência do pacote no mesmo usuário Android.'}</strong></div>
             </div>
             <p className="scanner-remediation-warning"><AlertTriangle size={16} /> Dados e configurações locais do aplicativo podem ser perdidos. Esta ação não confirma que o aplicativo seja malware.</p>
             <footer>
-              <button className="secondary" onClick={cancelarPreviewRemocao} disabled={remediationStates[remediationModal.action.id]?.status === 'executing'}>Cancelar</button>
-              <button className="danger" onClick={confirmarRemocao} disabled={remediationStates[remediationModal.action.id]?.status === 'executing'}>
-                {remediationStates[remediationModal.action.id]?.status === 'executing' ? <Loader2 size={15} className="spin" /> : <Trash2 size={15} />}
-                {remediationStates[remediationModal.action.id]?.status === 'executing' ? 'Removendo e verificando...' : 'Desinstalar aplicativo'}
+              <button
+                className="secondary"
+                onClick={['remediation_pending', 'executing', 'verifying'].includes(remediationStates[remediationModal.action.id]?.status) ? solicitarCancelamentoRemocao : cancelarPreviewRemocao}
+                disabled={remediationStates[remediationModal.action.id]?.status === 'cancel_requested'}
+              >
+                {['remediation_pending', 'executing', 'verifying'].includes(remediationStates[remediationModal.action.id]?.status) ? 'Solicitar cancelamento' : 'Cancelar'}
+              </button>
+              <button className="danger" onClick={confirmarRemocao} disabled={['remediation_pending', 'executing', 'verifying', 'cancel_requested'].includes(remediationStates[remediationModal.action.id]?.status)}>
+                {['remediation_pending', 'executing', 'verifying', 'cancel_requested'].includes(remediationStates[remediationModal.action.id]?.status) ? <Loader2 size={15} className="spin" /> : <Trash2 size={15} />}
+                {['remediation_pending', 'executing', 'verifying', 'cancel_requested'].includes(remediationStates[remediationModal.action.id]?.status) ? (STATUS_REMEDIACAO[remediationStates[remediationModal.action.id]?.status] || 'Processando...') : 'Desinstalar aplicativo'}
               </button>
             </footer>
           </section>

@@ -2,266 +2,172 @@ const test = require('node:test')
 const assert = require('node:assert/strict')
 const { analisarSeguranca } = require('./securityAnalyzer')
 
-const NOW = new Date('2026-08-27T12:00:00Z')
+const NOW = new Date('2026-08-31T12:00:00Z')
 
-function userApp(packageName, {
-  requestedPermissions = [],
-  grantedPermissions = [],
-  accessibilityServiceEnabled = false,
-  available = true,
-  ...details
+function app({
+  packageName = 'com.example.app', type = 'user', requested = [], granted = [],
+  accessibility = false, overlay, packageInstall, installer = 'com.android.vending',
+  hashStatus = 'not_verified', hash = null,
 } = {}) {
+  const specialCapabilities = {}
+  if (overlay !== undefined) specialCapabilities.overlay = {
+    status: 'available', effective: overlay, mode: overlay ? 'allow' : 'ignore', source: 'adb_appops',
+  }
+  if (packageInstall !== undefined) specialCapabilities.installUnknownApps = {
+    status: 'available', effective: packageInstall, mode: packageInstall ? 'allow' : 'ignore', source: 'adb_appops',
+  }
   return {
     packageName,
-    type: 'user',
-    securityDetails: { available, requestedPermissions, grantedPermissions, accessibilityServiceEnabled, ...details },
+    type,
+    securityDetails: {
+      available: true,
+      requestedPermissions: requested,
+      grantedPermissions: granted,
+      specialCapabilities,
+      accessibilityServiceEnabled: accessibility,
+      installerPackageName: installer,
+      initiatingPackageName: installer === 'adb' ? 'com.android.shell' : null,
+      integrity: {
+        hash: { algorithm: 'SHA-256', status: hashStatus, hash, reason: hash ? null : 'HASH_DEFERRED' },
+        signature: { status: 'not_verified', reason: 'CERTIFICATE_DIGEST_UNAVAILABLE_VIA_ADB' },
+      },
+    },
   }
 }
 
-function analisarApp(app) {
-  return analisarSeguranca({ permissions: { items: [app] } })
+function analyzeApp(input, security = {}) {
+  return analisarSeguranca({ security, permissions: { items: [app(input)] } }, { now: NOW })
 }
 
-test('patch recente não gera achado', () => {
+test('patch recente gera observation e nenhum finding', () => {
   const result = analisarSeguranca({ security: { securityPatch: '2026-07-01' } }, { now: NOW })
+  assert.equal(result.schemaVersion, '1.0')
+  assert.equal(result.observations.length, 1)
   assert.equal(result.findings.length, 0)
-  assert.deepEqual(result.threats, [])
 })
 
-test('patch com mais de dois anos gera achado alto baseado na data real', () => {
+test('patch com mais de dois anos gera finding de configuração high', () => {
   const result = analisarSeguranca({ security: { securityPatch: '2023-01-01' } }, { now: NOW })
-  assert.equal(result.findings[0].id, 'device.security_patch_age')
+  assert.equal(result.findings[0].ruleId, 'device.security_patch_age.high')
   assert.equal(result.findings[0].severity, 'high')
-  assert.ok(result.findings[0].evidence.ageDays > 730)
+  assert.equal(result.findings[0].category, 'outdated_security_patch')
+  assert.deepEqual(result.confirmedThreats, [])
 })
 
-test('build depurável gera achado e não ameaça', () => {
-  const result = analisarSeguranca({ security: { debuggableBuild: true } }, { now: NOW })
-  assert.equal(result.findings[0].id, 'device.debuggable_build')
-  assert.deepEqual(result.threats, [])
+test('build depurável e test-keys são configuração, não malware', () => {
+  const result = analisarSeguranca({ security: { debuggableBuild: true, buildTags: 'release-keys,test-keys' } }, { now: NOW })
+  assert.deepEqual(result.findings.map((finding) => finding.ruleId).sort(), [
+    'device.debuggable_build', 'device.test_keys_build',
+  ])
+  assert.ok(result.findings.every((finding) => finding.category === 'modified_environment'))
+  assert.deepEqual(result.confirmedThreats, [])
 })
 
-test('root não verificado não gera achado', () => {
-  const result = analisarSeguranca({ security: { root: { status: 'not_verified' } } }, { now: NOW })
-  assert.equal(result.findings.length, 0)
-})
-
-test('su acessível gera achado técnico sem classificar ameaça', () => {
+test('su acessível gera finding de ambiente modificado sem ameaça confirmada', () => {
   const result = analisarSeguranca({ security: { root: { status: 'detected', evidence: { path: '/system/xbin/su' } } } }, { now: NOW })
-  assert.equal(result.findings[0].id, 'device.su_binary_accessible')
-  assert.deepEqual(result.threats, [])
+  assert.equal(result.findings[0].ruleId, 'device.su_binary_accessible')
+  assert.equal(result.findings[0].evidenceConfidence, 'medium')
+  assert.deepEqual(result.confirmedThreats, [])
 })
 
-test('CAMERA isolada permanece informativa e com risco mínimo', () => {
-  const result = analisarApp(userApp('com.example.camera', {
-    grantedPermissions: ['android.permission.CAMERA'],
-  }))
-  assert.equal(result.findings[0].severity, 'info')
-  assert.equal(result.findings[0].risk.level, 'minimal')
-  assert.equal(result.findings[0].risk.score, 3)
-  assert.deepEqual(result.threats, [])
-})
-
-test('MICROPHONE e CAMERA não viram ameaça', () => {
-  const result = analisarApp(userApp('com.example.media', {
-    grantedPermissions: ['android.permission.CAMERA', 'android.permission.RECORD_AUDIO'],
-  }))
-  assert.equal(result.findings[0].risk.level, 'low')
-  assert.deepEqual(result.threats, [])
-})
-
-test('ACCESSIBILITY e OVERLAY elevam risco por correlação verificável', () => {
-  const result = analisarApp(userApp('com.example.overlay', {
-    grantedPermissions: ['android.permission.SYSTEM_ALERT_WINDOW'],
-    accessibilityServiceEnabled: true,
-  }))
-  assert.equal(result.findings[0].risk.level, 'high')
-  assert.equal(result.findings[0].risk.score, 52)
-  assert.ok(result.findings[0].risk.reasons.some((reason) => reason.id === 'correlation.accessibility_overlay'))
-})
-
-test('ACCESSIBILITY e PACKAGE_INSTALL elevam risco', () => {
-  const result = analisarApp(userApp('com.example.installer', {
-    grantedPermissions: ['android.permission.REQUEST_INSTALL_PACKAGES'],
-    accessibilityServiceEnabled: true,
-  }))
-  assert.equal(result.findings[0].risk.level, 'high')
-  assert.ok(result.findings[0].risk.reasons.some((reason) => reason.id === 'correlation.accessibility_package_install'))
-})
-
-test('múltiplas capacidades concedidas produzem score maior', () => {
-  const camera = analisarApp(userApp('com.example.camera', {
-    grantedPermissions: ['android.permission.CAMERA'],
-  }))
-  const multiple = analisarApp(userApp('com.example.multiple', {
-    grantedPermissions: [
-      'android.permission.CAMERA',
-      'android.permission.RECORD_AUDIO',
-      'android.permission.ACCESS_FINE_LOCATION',
-      'android.permission.READ_CONTACTS',
-    ],
-  }))
-  assert.ok(multiple.findings[0].risk.score > camera.findings[0].risk.score)
-})
-
-test('permissões apenas declaradas pesam menos que permissões concedidas', () => {
-  const requested = analisarApp(userApp('com.example.requested', {
-    requestedPermissions: ['android.permission.CAMERA', 'android.permission.RECORD_AUDIO'],
-  }))
-  const granted = analisarApp(userApp('com.example.granted', {
-    requestedPermissions: ['android.permission.CAMERA', 'android.permission.RECORD_AUDIO'],
-    grantedPermissions: ['android.permission.CAMERA', 'android.permission.RECORD_AUDIO'],
-  }))
-  assert.equal(requested.findings[0].risk.score, 2)
-  assert.equal(granted.findings[0].risk.score, 8)
-  assert.ok(requested.findings[0].risk.score < granted.findings[0].risk.score)
-})
-
-test('informações indisponíveis reduzem confiança e não geram finding', () => {
-  const result = analisarApp(userApp('com.example.unavailable', { available: false }))
-  assert.equal(result.appRiskProfiles[0].risk.confidence, 'low')
-  assert.equal(result.findings.length, 0)
-})
-
-test('aplicativo de sistema não recebe perfil de risco agressivo', () => {
-  const result = analisarSeguranca({ permissions: { items: [{
-    packageName: 'android',
-    type: 'system',
-    securityDetails: { available: true, grantedPermissions: ['android.permission.SYSTEM_ALERT_WINDOW'] },
-  }] } })
-  assert.equal(result.appRiskProfiles.length, 0)
-  assert.equal(result.findings.length, 0)
-})
-
-test('score alto sozinho não alimenta threats', () => {
-  const result = analisarApp(userApp('com.example.highrisk', {
-    grantedPermissions: ['android.permission.SYSTEM_ALERT_WINDOW', 'android.permission.REQUEST_INSTALL_PACKAGES'],
-    accessibilityServiceEnabled: true,
-  }))
-  assert.ok(result.findings[0].risk.score >= 40)
-  assert.deepEqual(result.threats, [])
-})
-
-test('motivos registram exatamente a evidência que adicionou pontos', () => {
-  const result = analisarApp(userApp('com.example.camera', {
-    grantedPermissions: ['android.permission.CAMERA'],
-  }))
-  const reason = result.findings[0].risk.reasons[0]
-  assert.deepEqual(reason, {
-    id: 'capability.camera.granted',
-    points: 3,
-    message: 'Capacidade Câmera concedida.',
-    evidence: {
-      capability: 'CAMERA',
-      state: 'granted',
-      signals: ['android.permission.CAMERA'],
-    },
+for (const [label, permission] of [
+  ['CAMERA', 'android.permission.CAMERA'],
+  ['RECORD_AUDIO', 'android.permission.RECORD_AUDIO'],
+  ['LOCATION', 'android.permission.ACCESS_FINE_LOCATION'],
+]) {
+  test(`${label} isolada permanece observation`, () => {
+    const result = analyzeApp({ requested: [permission], granted: [permission] })
+    assert.ok(result.observations.some((observation) => observation.value?.signal === permission))
+    assert.equal(result.findings.length, 0)
   })
-})
+}
 
-test('findings são priorizados por severidade e score', () => {
-  const result = analisarSeguranca({ permissions: { items: [
-    userApp('com.example.camera', { grantedPermissions: ['android.permission.CAMERA'] }),
-    userApp('com.example.overlay', {
-      grantedPermissions: ['android.permission.SYSTEM_ALERT_WINDOW'],
-      accessibilityServiceEnabled: true,
-    }),
-  ] } })
-  assert.equal(result.findings[0].packageName, 'com.example.overlay')
-})
-
-test('warnings não viram findings automaticamente', () => {
-  const result = analisarSeguranca({ warnings: [{ code: 'COLLECTION_UNAVAILABLE' }] })
-  assert.equal(result.findings.length, 0)
-  assert.deepEqual(result.threats, [])
-})
-
-test('origem conhecida é normalizada sem aumentar o score', () => {
-  const result = analisarApp(userApp('com.example.play', {
-    installerPackageName: 'com.android.vending',
-    grantedPermissions: ['android.permission.CAMERA'],
-  }))
-  const profile = result.appRiskProfiles[0]
-  assert.equal(profile.origin.type, 'google_play')
-  assert.equal(profile.origin.label, 'Google Play')
-  assert.equal(profile.risk.score, 3)
-})
-
-test('origem desconhecida isolada não gera finding nem threat', () => {
-  const result = analisarApp(userApp('com.example.unknown'))
+test('origem desconhecida isolada permanece observation', () => {
+  const result = analyzeApp({ installer: null })
   assert.equal(result.appRiskProfiles[0].origin.type, 'unknown')
   assert.equal(result.findings.length, 0)
-  assert.deepEqual(result.threats, [])
 })
 
-test('instalação via ADB é normalizada e só pesa com capacidades fortes', () => {
-  const result = analisarApp(userApp('com.example.adb', {
-    initiatingPackageName: 'com.android.shell',
-    grantedPermissions: ['android.permission.SYSTEM_ALERT_WINDOW'],
-    accessibilityServiceEnabled: true,
-  }))
-  const profile = result.appRiskProfiles[0]
-  assert.equal(profile.origin.type, 'adb')
-  assert.ok(profile.risk.reasons.some((reason) => reason.id === 'correlation.origin_adb_strong_capabilities'))
-  assert.equal(profile.risk.score, 54)
-  assert.deepEqual(result.threats, [])
-})
-
-test('hash SHA-256 presente é preservado como evidência de integridade', () => {
-  const hash = 'a'.repeat(64)
-  const result = analisarApp(userApp('com.example.hashed', {
-    integrity: {
-      hash: { algorithm: 'SHA-256', hash, status: 'available' },
-      signature: { status: 'not_verified' },
-    },
-  }))
-  assert.deepEqual(result.appRiskProfiles[0].integrity.hash, {
-    algorithm: 'SHA-256', hash, status: 'available', reason: null,
-  })
-})
-
-test('hash indisponível não gera pontos nem finding', () => {
-  const result = analisarApp(userApp('com.example.nohash', {
-    integrity: {
-      hash: { algorithm: 'SHA-256', hash: null, status: 'not_verified', reason: 'HASH_COMMAND_UNAVAILABLE' },
-    },
-  }))
-  const profile = result.appRiskProfiles[0]
-  assert.equal(profile.integrity.hash.status, 'not_verified')
-  assert.equal(profile.risk.score, 0)
+test('sideload via ADB isolado permanece observation', () => {
+  const result = analyzeApp({ installer: 'adb' })
+  assert.equal(result.appRiskProfiles[0].origin.type, 'adb')
   assert.equal(result.findings.length, 0)
 })
 
-test('assinatura indisponível não é tratada como risco', () => {
-  const result = analisarApp(userApp('com.example.unsignedunknown', {
-    integrity: { signature: { status: 'not_verified', reason: 'CERTIFICATE_DIGEST_UNAVAILABLE_VIA_ADB' } },
-  }))
-  assert.equal(result.appRiskProfiles[0].integrity.signature.status, 'not_verified')
-  assert.equal(result.appRiskProfiles[0].risk.score, 0)
-  assert.deepEqual(result.threats, [])
+test('packageName isolado nunca gera finding', () => {
+  const result = analyzeApp({ packageName: 'com.spy.hack.update' })
+  assert.equal(result.findings.length, 0)
+  assert.deepEqual(result.confirmedThreats, [])
 })
 
-test('origem desconhecida com capacidades fortes aumenta risco de forma controlada', () => {
-  const known = analisarApp(userApp('com.example.known', {
-    installerPackageName: 'com.android.vending',
-    grantedPermissions: ['android.permission.SYSTEM_ALERT_WINDOW'],
-    accessibilityServiceEnabled: true,
-  }))
-  const unknown = analisarApp(userApp('com.example.unknownstrong', {
-    grantedPermissions: ['android.permission.SYSTEM_ALERT_WINDOW'],
-    accessibilityServiceEnabled: true,
-  }))
-  assert.equal(unknown.findings[0].risk.score - known.findings[0].risk.score, 4)
-  assert.ok(unknown.findings[0].risk.reasons.some((reason) => reason.id === 'correlation.origin_unknown_strong_capabilities'))
+test('overlay solicitado sem AppOps permitido não é efetivo', () => {
+  const permission = 'android.permission.SYSTEM_ALERT_WINDOW'
+  const result = analyzeApp({ requested: [permission], granted: [permission], overlay: false })
+  const observation = result.observations.find((item) => item.value?.capability === 'OVERLAY')
+  assert.equal(observation.status, 'requested')
+  assert.equal(result.findings.length, 0)
 })
 
-test('score V3 permanece explicável pela soma dos motivos', () => {
-  const result = analisarApp(userApp('com.example.explainable', {
-    initiatingPackageName: 'com.android.shell',
-    grantedPermissions: ['android.permission.SYSTEM_ALERT_WINDOW'],
-    accessibilityServiceEnabled: true,
-  }))
-  const risk = result.findings[0].risk
-  assert.equal(risk.rawScore, risk.reasons.reduce((total, reason) => total + reason.points, 0))
-  assert.equal(risk.score, Math.min(100, risk.rawScore))
+test('overlay efetivo isolado permanece observation', () => {
+  const result = analyzeApp({ requested: ['android.permission.SYSTEM_ALERT_WINDOW'], overlay: true })
+  assert.ok(result.observations.some((item) => item.value?.capability === 'OVERLAY' && item.status === 'effective'))
+  assert.equal(result.findings.length, 0)
+})
+
+test('accessibility isolada permanece observation', () => {
+  const result = analyzeApp({ accessibility: true })
+  assert.ok(result.observations.some((item) => item.value?.capability === 'ACCESSIBILITY'))
+  assert.equal(result.findings.length, 0)
+})
+
+test('overlay efetivo com accessibility gera finding contextual', () => {
+  const result = analyzeApp({
+    accessibility: true, overlay: true,
+    requested: ['android.permission.SYSTEM_ALERT_WINDOW'],
+  })
+  assert.equal(result.findings.length, 1)
+  assert.equal(result.findings[0].ruleId, 'app.accessibility_overlay')
+  assert.equal(result.findings[0].severity, 'medium')
+  assert.equal(result.findings[0].evidenceConfidence, 'high')
+})
+
+test('overlay, accessibility e sideload elevam finding sem confirmar ameaça', () => {
+  const result = analyzeApp({
+    accessibility: true, overlay: true, installer: 'adb',
+    requested: ['android.permission.SYSTEM_ALERT_WINDOW'],
+  })
+  assert.equal(result.findings.filter((finding) => finding.ruleId.includes('accessibility_overlay')).length, 1)
+  assert.equal(result.findings[0].ruleId, 'app.accessibility_overlay.adb_origin')
+  assert.equal(result.findings[0].severity, 'high')
+  assert.notEqual(result.findings[0].severity, 'critical')
+  assert.deepEqual(result.confirmedThreats, [])
+})
+
+test('app de sistema com múltiplas permissões não recebe finding agressivo', () => {
+  const result = analyzeApp({
+    type: 'system', accessibility: true, overlay: true, packageInstall: true,
+    requested: ['android.permission.SYSTEM_ALERT_WINDOW', 'android.permission.REQUEST_INSTALL_PACKAGES'],
+  })
+  assert.equal(result.findings.length, 0)
+  assert.ok(result.observations.length > 0)
+})
+
+test('hash desconhecido não gera finding', () => {
+  const result = analyzeApp({ hashStatus: 'not_verified' })
+  assert.equal(result.findings.length, 0)
+  assert.ok(result.observations.some((observation) => observation.category === 'app_integrity'))
+})
+
+test('dados insuficientes não inventam finding', () => {
+  const result = analisarSeguranca({}, { now: NOW })
+  assert.deepEqual(result.findings, [])
+  assert.deepEqual(result.confirmedThreats, [])
+  assert.equal(result.reputation.status, 'not_configured')
+})
+
+test('perfil compatível aguarda coverage antes do cálculo da ETAPA 4', () => {
+  const result = analyzeApp({ requested: ['android.permission.CAMERA'], granted: ['android.permission.CAMERA'] })
+  assert.equal(result.appRiskProfiles[0].risk.status, 'pending_coverage')
+  assert.equal(result.appRiskProfiles[0].risk.score, null)
+  assert.equal(result.appRiskProfiles[0].risk.reason, 'SECURITY_RISK_SCORE_REQUIRES_SCAN_COVERAGE')
 })

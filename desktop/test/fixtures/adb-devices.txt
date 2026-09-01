@@ -1,0 +1,5 @@
+List of devices attached
+TEST-SERIAL-001       device product:test_product model:Test_Model device:test transport_id:1
+TEST-SERIAL-UNAUTH    unauthorized usb:1-2 transport_id:2
+TEST-SERIAL-OFFLINE   offline transport_id:3
+ignored-line-without-status

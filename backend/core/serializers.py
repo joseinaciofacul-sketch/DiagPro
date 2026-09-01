@@ -1,7 +1,13 @@
 from rest_framework import serializers
 from django.contrib.auth import password_validation
 from django.contrib.auth import get_user_model
-from .models import Empresa, Cliente, Dispositivo, Analise, Relatorio, Plano, Licenca, Pagamento, Diagnostico
+from django.db import transaction
+
+from .models import (
+    Empresa, Cliente, Dispositivo, Analise, Relatorio, Plano, Licenca,
+    Pagamento, Diagnostico, SecurityFinding,
+)
+from .security_projection import build_finding_models, validate_security_snapshot
 
 
 class EmpresaSerializer(serializers.ModelSerializer):
@@ -109,6 +115,11 @@ class ClienteSerializer(serializers.ModelSerializer):
                 'health_available': item.health_available,
                 'health_score': item.health_score,
                 'health_label': item.health_label,
+                'security_risk_score': item.security_risk_score,
+                'security_risk_level': item.security_risk_level,
+                'security_risk_status': item.security_risk_status,
+                'security_risk_version': item.security_risk_version,
+                'security_findings_count': len(item.security_findings.all()),
             }
             for item in cliente.diagnosticos.all()
         ]
@@ -183,7 +194,11 @@ class CheckoutSerializer(serializers.Serializer):
 
 class RemediationTransitionSerializer(serializers.Serializer):
     status = serializers.ChoiceField(
-        choices=['executing', 'verifying', 'resolved', 'failed', 'not_verified'],
+        choices=[
+            'remediation_pending', 'executing', 'verifying', 'resolved',
+            'verification_failed', 'failed', 'not_verified', 'canceled',
+            'device_disconnected', 'not_authorized', 'not_supported', 'inconclusive',
+        ],
     )
     at = serializers.DateTimeField()
 
@@ -193,37 +208,102 @@ class RemediationVerificationSerializer(serializers.Serializer):
     installed = serializers.BooleanField(allow_null=True)
     source = serializers.CharField(required=False, allow_blank=False, max_length=80)
     user = serializers.IntegerField(required=False, min_value=0)
+    reason = serializers.CharField(required=False, allow_blank=False, max_length=120)
+
+
+class RemediationDeviceSerializer(serializers.Serializer):
+    serial = serializers.RegexField(regex=r'^[A-Za-z0-9._:-]{1,128}$', max_length=128)
+    manufacturer = serializers.CharField(required=False, allow_null=True, allow_blank=True, max_length=120)
+    model = serializers.CharField(required=False, allow_null=True, allow_blank=True, max_length=120)
+
+
+class RemediationConfirmationSerializer(serializers.Serializer):
+    tokenId = serializers.UUIDField()
+    tokenHash = serializers.RegexField(regex=r'^[a-f0-9]{64}$', max_length=64)
+    expiresAt = serializers.DateTimeField()
 
 
 class RemediationAuditSerializer(serializers.Serializer):
     executionId = serializers.UUIDField()
-    findingId = serializers.CharField(max_length=300)
-    action = serializers.ChoiceField(choices=['uninstall_user_app'])
+    actionId = serializers.UUIDField(required=False)
+    projectionId = serializers.IntegerField(required=False, allow_null=True, min_value=1)
+    findingId = serializers.CharField(max_length=400)
+    action = serializers.ChoiceField(choices=[
+        'uninstall_user_app', 'manual_review', 'manual_security_setting',
+        'manual_device_admin_review', 'manual_accessibility_review',
+        'manual_overlay_review', 'rescan', 'no_action',
+    ])
+    device = RemediationDeviceSerializer(required=False)
+    androidUser = serializers.IntegerField(required=False, allow_null=True, min_value=0)
     packageName = serializers.RegexField(
         regex=r'^[A-Za-z][A-Za-z0-9_.-]{1,254}$',
         max_length=255,
+        required=False,
+        allow_null=True,
     )
+    preview = serializers.JSONField(required=False)
+    confirmation = RemediationConfirmationSerializer(required=False)
     startedAt = serializers.DateTimeField()
-    finishedAt = serializers.DateTimeField()
-    status = serializers.ChoiceField(choices=['resolved', 'failed', 'not_verified'])
+    finishedAt = serializers.DateTimeField(required=False, allow_null=True)
+    status = serializers.ChoiceField(choices=[
+        'remediation_pending', 'resolved', 'verification_failed', 'failed',
+        'not_verified', 'canceled', 'device_disconnected', 'not_authorized',
+        'not_supported', 'inconclusive',
+    ])
     transitions = RemediationTransitionSerializer(many=True, allow_empty=False)
     verification = RemediationVerificationSerializer()
+    logicalCommand = serializers.CharField(required=False, allow_null=True, max_length=600)
+    actionDispatched = serializers.BooleanField(required=False, default=False)
+    adbResult = serializers.JSONField(required=False, allow_null=True)
+    error = serializers.JSONField(required=False, allow_null=True)
+
+    @staticmethod
+    def _contains_raw_token(value):
+        if isinstance(value, dict):
+            for key, child in value.items():
+                if str(key).lower() in {'confirmationtoken', 'rawtoken', 'token'}:
+                    return True
+                if RemediationAuditSerializer._contains_raw_token(child):
+                    return True
+        if isinstance(value, list):
+            return any(RemediationAuditSerializer._contains_raw_token(item) for item in value)
+        return False
 
     def validate(self, attrs):
-        if '.' not in attrs['packageName']:
+        forbidden_owner_fields = {'usuario', 'user', 'diagProUser', 'diagnosticId'} & set(self.initial_data)
+        if forbidden_owner_fields:
+            raise serializers.ValidationError({
+                'campos': 'O usuário e o diagnóstico da auditoria são definidos pelo servidor.',
+            })
+        if self._contains_raw_token(self.initial_data):
+            raise serializers.ValidationError({'confirmation': 'O token bruto de confirmação não pode ser persistido.'})
+
+        package_name = attrs.get('packageName')
+        if attrs['action'] == 'uninstall_user_app' and (not package_name or '.' not in package_name):
             raise serializers.ValidationError({'packageName': 'Package name inválido.'})
-        if attrs['finishedAt'] < attrs['startedAt']:
+        if package_name and '.' not in package_name:
+            raise serializers.ValidationError({'packageName': 'Package name inválido.'})
+
+        finished_at = attrs.get('finishedAt')
+        is_pending = attrs['status'] == 'remediation_pending'
+        if is_pending and finished_at is not None:
+            raise serializers.ValidationError({'finishedAt': 'A remediação pendente ainda não possui término.'})
+        if not is_pending and finished_at is None:
+            raise serializers.ValidationError({'finishedAt': 'O resultado final exige horário de término.'})
+        if finished_at is not None and finished_at < attrs['startedAt']:
             raise serializers.ValidationError({'finishedAt': 'O término não pode ser anterior ao início.'})
 
         transitions = attrs['transitions']
-        if transitions[0]['status'] != 'executing':
-            raise serializers.ValidationError({'transitions': 'A primeira transição deve ser executing.'})
+        stage6_payload = any(key in attrs for key in ['actionId', 'preview', 'confirmation', 'device', 'androidUser'])
+        allowed_first = {'remediation_pending'} if stage6_payload else {'remediation_pending', 'executing'}
+        if transitions[0]['status'] not in allowed_first:
+            raise serializers.ValidationError({'transitions': 'A primeira transição operacional deve ser remediation_pending.'})
         if transitions[-1]['status'] != attrs['status']:
             raise serializers.ValidationError({'transitions': 'A transição final deve coincidir com o resultado.'})
         transition_times = [item['at'] for item in transitions]
         if transition_times != sorted(transition_times):
             raise serializers.ValidationError({'transitions': 'As transições devem estar em ordem cronológica.'})
-        if transition_times[0] < attrs['startedAt'] or transition_times[-1] > attrs['finishedAt']:
+        if transition_times[0] < attrs['startedAt'] or (finished_at and transition_times[-1] > finished_at):
             raise serializers.ValidationError({'transitions': 'As transições devem estar dentro do período da execução.'})
 
         verification = attrs['verification']
@@ -233,14 +313,49 @@ class RemediationAuditSerializer(serializers.Serializer):
             raise serializers.ValidationError({'verification': 'Resolved exige ausência verificada do pacote.'})
         if attrs['status'] == 'not_verified' and verification['status'] != 'not_verified':
             raise serializers.ValidationError({'verification': 'not_verified exige verificação indisponível.'})
+        if attrs['status'] == 'verification_failed' and not (
+            verification['status'] == 'verified' and verification['installed'] is True
+        ):
+            raise serializers.ValidationError({'verification': 'verification_failed exige pacote ainda instalado.'})
         if verification['status'] == 'verified' and verification['installed'] is None:
             raise serializers.ValidationError({'verification': 'Verificação concluída exige o estado installed.'})
+
+        if stage6_payload:
+            required = ['actionId', 'device', 'androidUser', 'preview', 'confirmation']
+            missing = [field for field in required if field not in attrs]
+            if missing:
+                raise serializers.ValidationError({'campos': f'Campos operacionais ausentes: {", ".join(missing)}.'})
+            if attrs['actionId'] != attrs['executionId']:
+                raise serializers.ValidationError({'actionId': 'actionId deve coincidir com executionId.'})
+            diagnostico = self.context.get('diagnostico')
+            if attrs['device']['serial'] != diagnostico.serial:
+                raise serializers.ValidationError({'device': 'O dispositivo não corresponde ao diagnóstico.'})
+            preview = attrs['preview']
+            if not isinstance(preview, dict):
+                raise serializers.ValidationError({'preview': 'Preview operacional inválido.'})
+            if attrs['action'] == 'uninstall_user_app':
+                if preview.get('app', {}).get('type') != 'user':
+                    raise serializers.ValidationError({'preview': 'Uninstall exige aplicativo de usuário no preview.'})
+                if preview.get('app', {}).get('packageName') != package_name:
+                    raise serializers.ValidationError({'preview': 'O pacote do preview não corresponde à ação.'})
+                if preview.get('androidUser') != attrs['androidUser']:
+                    raise serializers.ValidationError({'preview': 'O usuário Android do preview não corresponde à ação.'})
+                expected_command = f"pm uninstall --user {attrs['androidUser']} {package_name}"
+                if attrs.get('logicalCommand') != expected_command:
+                    raise serializers.ValidationError({'logicalCommand': 'O comando lógico de remoção é inválido.'})
 
         diagnostico = self.context.get('diagnostico')
         resultado = diagnostico.resultado_tecnico if diagnostico else {}
         security = resultado.get('security') if isinstance(resultado, dict) else None
         findings = security.get('findings', []) if isinstance(security, dict) else []
         actions = security.get('remediationActions', []) if isinstance(security, dict) else []
+        projected_finding = None
+        projection_id = attrs.get('projectionId')
+        if projection_id:
+            projected_finding = diagnostico.security_findings.filter(pk=projection_id).first()
+            if projected_finding is None or projected_finding.finding_id != attrs['findingId']:
+                raise serializers.ValidationError({'projectionId': 'SecurityFinding não pertence ao diagnóstico informado.'})
+
         finding = next(
             (item for item in findings if isinstance(item, dict) and item.get('id') == attrs['findingId']),
             None,
@@ -254,9 +369,12 @@ class RemediationAuditSerializer(serializers.Serializer):
             ),
             None,
         )
-        if finding is None:
+        if finding is None and projected_finding is None:
             raise serializers.ValidationError({'findingId': 'Finding não pertence ao diagnóstico informado.'})
-        if finding.get('packageName') != attrs['packageName']:
+        expected_package = finding.get('packageName') if finding else (
+            projected_finding.subject_id if projected_finding.subject_type == 'app' else None
+        )
+        if expected_package != package_name:
             raise serializers.ValidationError({'packageName': 'O pacote não corresponde ao finding.'})
         if planned_action is None or planned_action.get('availability') != 'available':
             raise serializers.ValidationError({'action': 'A ação não estava disponível neste diagnóstico.'})
@@ -265,9 +383,91 @@ class RemediationAuditSerializer(serializers.Serializer):
         return attrs
 
 
+class SecurityFindingSummarySerializer(serializers.ModelSerializer):
+    diagnostico = serializers.PrimaryKeyRelatedField(read_only=True)
+    diagnosticFinishedAt = serializers.DateTimeField(
+        source='diagnostico.finalizado_em',
+        read_only=True,
+    )
+    projection_id = serializers.IntegerField(source='id', read_only=True)
+    id = serializers.CharField(source='finding_id', read_only=True)
+    ruleId = serializers.CharField(source='rule_id', read_only=True)
+    subjectType = serializers.CharField(source='subject_type', read_only=True)
+    subjectId = serializers.CharField(source='subject_id', read_only=True)
+    packageName = serializers.SerializerMethodField()
+    description = serializers.CharField(source='summary', read_only=True)
+    evidenceConfidence = serializers.CharField(source='evidence_confidence', read_only=True)
+    scoreContribution = serializers.DecimalField(
+        source='score_contribution',
+        max_digits=5,
+        decimal_places=2,
+        read_only=True,
+        allow_null=True,
+    )
+    scorerVersion = serializers.CharField(source='scorer_version', read_only=True, allow_null=True)
+    createdAt = serializers.DateTimeField(source='created_at', read_only=True)
+    updatedAt = serializers.DateTimeField(source='updated_at', read_only=True)
+    remediation = serializers.SerializerMethodField()
+
+    class Meta:
+        model = SecurityFinding
+        fields = [
+            'projection_id', 'diagnostico', 'diagnosticFinishedAt', 'id', 'ruleId',
+            'category', 'subjectType', 'subjectId', 'packageName', 'title',
+            'summary', 'description', 'severity',
+            'evidenceConfidence', 'evidence', 'status', 'recommendation',
+            'remediation', 'scoreContribution', 'scorerVersion', 'createdAt', 'updatedAt',
+        ]
+        read_only_fields = fields
+
+    def get_packageName(self, finding):
+        return finding.subject_id if finding.subject_type == 'app' else None
+
+    def get_remediation(self, finding):
+        return {
+            'type': finding.remediation_type or 'none',
+            'available': finding.remediation_available,
+        }
+
+
+class SecurityFindingDetailSerializer(SecurityFindingSummarySerializer):
+    device = serializers.SerializerMethodField()
+    latestRemediation = serializers.SerializerMethodField()
+
+    class Meta(SecurityFindingSummarySerializer.Meta):
+        fields = SecurityFindingSummarySerializer.Meta.fields + [
+            'device', 'latestRemediation',
+        ]
+
+    def get_device(self, finding):
+        diagnostico = finding.diagnostico
+        return {
+            'serial': diagnostico.serial,
+            'manufacturer': diagnostico.fabricante,
+            'model': diagnostico.modelo,
+            'androidVersion': diagnostico.versao_android,
+            'sdk': diagnostico.sdk,
+            'securityPatch': diagnostico.security_patch,
+        }
+
+    def get_latestRemediation(self, finding):
+        resultado = finding.diagnostico.resultado_tecnico
+        remediations = resultado.get('remediations', []) if isinstance(resultado, dict) else []
+        matches = [
+            item for item in remediations
+            if isinstance(item, dict) and item.get('findingId') == finding.finding_id
+        ]
+        if not matches:
+            return None
+        return matches[-1]
+
+
 class DiagnosticoSerializer(serializers.ModelSerializer):
     usuario = serializers.PrimaryKeyRelatedField(read_only=True)
     cliente = ClienteResumoSerializer(read_only=True)
+    security_findings = SecurityFindingSummarySerializer(many=True, read_only=True)
+    security_findings_count = serializers.SerializerMethodField()
+    security_projection_available = serializers.SerializerMethodField()
 
     class Meta:
         model = Diagnostico
@@ -281,6 +481,7 @@ class DiagnosticoSerializer(serializers.ModelSerializer):
             'versao_android',
             'sdk',
             'security_patch',
+            'scan_id',
             'modo',
             'modulos',
             'iniciado_em',
@@ -289,6 +490,14 @@ class DiagnosticoSerializer(serializers.ModelSerializer):
             'health_score',
             'health_label',
             'health_explanation',
+            'security_risk_score',
+            'security_risk_level',
+            'security_risk_status',
+            'security_risk_version',
+            'security_schema_version',
+            'security_projection_available',
+            'security_findings_count',
+            'security_findings',
             'bateria',
             'armazenamento',
             'memoria',
@@ -298,7 +507,12 @@ class DiagnosticoSerializer(serializers.ModelSerializer):
             'resultado_tecnico',
             'criado_em',
         ]
-        read_only_fields = ['id', 'usuario', 'cliente', 'criado_em']
+        read_only_fields = [
+            'id', 'usuario', 'cliente', 'scan_id', 'security_risk_score',
+            'security_risk_level', 'security_risk_status', 'security_risk_version',
+            'security_schema_version', 'security_projection_available',
+            'security_findings_count', 'security_findings', 'criado_em',
+        ]
         extra_kwargs = {
             'serial': {'required': True, 'allow_blank': False},
             'modulos': {'required': True},
@@ -338,6 +552,7 @@ class DiagnosticoSerializer(serializers.ModelSerializer):
     def validate_resultado_tecnico(self, value):
         if not isinstance(value, dict) or not value:
             raise serializers.ValidationError('O resultado técnico completo é obrigatório.')
+        self._security_projection = validate_security_snapshot(value)
         return value
 
     def validate(self, attrs):
@@ -347,3 +562,38 @@ class DiagnosticoSerializer(serializers.ModelSerializer):
         if attrs.get('health_available') is True and attrs.get('health_score') is None:
             raise serializers.ValidationError({'health_score': 'Informe o score quando ele estiver disponível.'})
         return attrs
+
+    def get_security_projection(self):
+        projection = getattr(self, '_security_projection', None)
+        if projection is None:
+            projection = validate_security_snapshot(self.validated_data['resultado_tecnico'])
+            self._security_projection = projection
+        return projection
+
+    def get_security_findings_count(self, diagnostico):
+        return len(diagnostico.security_findings.all())
+
+    def get_security_projection_available(self, diagnostico):
+        return bool(
+            diagnostico.security_schema_version
+            or diagnostico.security_risk_status is not None
+            or self.get_security_findings_count(diagnostico) > 0
+        )
+
+    def create(self, validated_data):
+        projection = self.get_security_projection()
+        risk = projection.get('risk') or {}
+        projected_fields = {
+            'scan_id': projection.get('scan_id'),
+            'security_schema_version': projection.get('schema_version'),
+            'security_risk_score': risk.get('score'),
+            'security_risk_level': risk.get('level'),
+            'security_risk_status': risk.get('status'),
+            'security_risk_version': risk.get('version'),
+        }
+        with transaction.atomic():
+            diagnostico = Diagnostico.objects.create(**validated_data, **projected_fields)
+            findings = build_finding_models(diagnostico, projection)
+            if findings:
+                SecurityFinding.objects.bulk_create(findings)
+        return diagnostico

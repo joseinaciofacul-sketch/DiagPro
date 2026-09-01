@@ -26,7 +26,13 @@ import './DevicesPage.css'
 
 const EMPTY_VALUE = 'Não disponível'
 const MODE_LABELS = { quick: 'Rápida', complete: 'Completa', custom: 'Personalizada' }
-const REMEDIATION_STATUS = { resolved: 'Resolvido', failed: 'Falha', not_verified: 'Não verificado' }
+const REMEDIATION_STATUS = {
+  remediation_pending: 'Correção pendente', resolved: 'Resolvido',
+  verification_failed: 'Verificação falhou', failed: 'Falha',
+  not_verified: 'Não verificado', inconclusive: 'Inconclusivo', canceled: 'Cancelado',
+  device_disconnected: 'Dispositivo desconectado', not_authorized: 'ADB não autorizado',
+  not_supported: 'Não suportado',
+}
 
 function getDiagproApi() {
   if (typeof window === 'undefined') return null
@@ -415,6 +421,16 @@ function DevicesPage({ accessToken, scanResult = null, onStartDiagnostic, onOpen
     }
   }, [isConnected, serial])
 
+  const cancelRemoval = useCallback(() => {
+    if (removalModal?.preview?.actionId && typeof getDiagproApi()?.cancelRemediation === 'function') {
+      void getDiagproApi().cancelRemediation({
+        actionId: removalModal.preview.actionId,
+        confirmationToken: removalModal.token,
+      })
+    }
+    setRemovalModal(null)
+  }, [removalModal])
+
   const confirmRemoval = useCallback(async () => {
     if (
       !removalModal
@@ -432,7 +448,9 @@ function DevicesPage({ accessToken, scanResult = null, onStartDiagnostic, onOpen
       const args = {
         serial,
         packageName: removalModal.app.packageName,
+        androidUserId: removalModal.preview.currentUserId,
         confirmationToken: removalModal.token,
+        actionId: removalModal.preview.actionId,
       }
 
       const result = await api.uninstallUserApp(args)
@@ -808,7 +826,7 @@ function DevicesPage({ accessToken, scanResult = null, onStartDiagnostic, onOpen
         <div
           className="dp-devices-modal-backdrop"
           onMouseDown={(event) => {
-            if (event.target === event.currentTarget && !removing) setRemovalModal(null)
+            if (event.target === event.currentTarget && !removing) cancelRemoval()
           }}
         >
           <section className="dp-devices-modal" role="dialog" aria-modal="true" aria-labelledby="remove-app-title">
@@ -818,7 +836,7 @@ function DevicesPage({ accessToken, scanResult = null, onStartDiagnostic, onOpen
                 <h2 id="remove-app-title">Confirmar remoção</h2>
                 <p>Esta ação solicitará a desinstalação real pelo ADB.</p>
               </div>
-              <button onClick={() => setRemovalModal(null)} disabled={removing} aria-label="Fechar confirmação">
+              <button onClick={cancelRemoval} disabled={removing} aria-label="Fechar confirmação">
                 <X size={19} />
               </button>
             </div>
@@ -830,6 +848,7 @@ function DevicesPage({ accessToken, scanResult = null, onStartDiagnostic, onOpen
 
             <div className="dp-devices-modal-details">
               <div><span>Tipo</span><strong>{removalModal.app.type.label}</strong></div>
+              <div><span>Usuário Android</span><strong>{removalModal.preview?.currentUserId ?? 'Não identificado'}</strong></div>
               {removalModal.preview?.reason && <div><span>Motivo</span><strong>{removalModal.preview.reason}</strong></div>}
               {removalModal.preview?.motivo && !removalModal.preview?.reason && <div><span>Motivo</span><strong>{removalModal.preview.motivo}</strong></div>}
               {removalModal.preview?.impact && <div><span>Impacto</span><strong>{removalModal.preview.impact}</strong></div>}
@@ -840,7 +859,7 @@ function DevicesPage({ accessToken, scanResult = null, onStartDiagnostic, onOpen
             </p>
 
             <div className="dp-devices-modal-actions">
-              <button className="dp-devices-secondary-btn" onClick={() => setRemovalModal(null)} disabled={removing}>
+              <button className="dp-devices-secondary-btn" onClick={cancelRemoval} disabled={removing}>
                 Cancelar
               </button>
               <button className="dp-devices-danger-btn" onClick={confirmRemoval} disabled={removing}>

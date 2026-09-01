@@ -271,6 +271,7 @@ class Diagnostico(models.Model):
     versao_android = models.CharField(max_length=50, blank=True)
     sdk = models.PositiveSmallIntegerField(null=True, blank=True)
     security_patch = models.DateField(null=True, blank=True)
+    scan_id = models.UUIDField(null=True, blank=True)
 
     modo = models.CharField(max_length=20, choices=MODO_CHOICES)
     modulos = models.JSONField(default=list)
@@ -286,6 +287,16 @@ class Diagnostico(models.Model):
     health_label = models.CharField(max_length=80, blank=True)
     health_explanation = models.TextField(blank=True)
 
+    security_risk_score = models.PositiveSmallIntegerField(
+        null=True,
+        blank=True,
+        validators=[MinValueValidator(0), MaxValueValidator(100)],
+    )
+    security_risk_level = models.CharField(max_length=20, null=True, blank=True)
+    security_risk_status = models.CharField(max_length=30, null=True, blank=True)
+    security_risk_version = models.CharField(max_length=20, null=True, blank=True)
+    security_schema_version = models.CharField(max_length=20, null=True, blank=True)
+
     bateria = models.JSONField(null=True, blank=True)
     armazenamento = models.JSONField(null=True, blank=True)
     memoria = models.JSONField(null=True, blank=True)
@@ -300,7 +311,91 @@ class Diagnostico(models.Model):
         indexes = [
             models.Index(fields=['usuario', '-finalizado_em'], name='diag_user_finished_idx'),
             models.Index(fields=['usuario', 'serial', '-finalizado_em'], name='diag_user_serial_idx'),
+            models.Index(
+                fields=['usuario', 'security_risk_level', '-finalizado_em'],
+                name='diag_user_risk_idx',
+            ),
+        ]
+        constraints = [
+            models.UniqueConstraint(
+                fields=['usuario', 'scan_id'],
+                condition=models.Q(scan_id__isnull=False),
+                name='diag_user_scan_unique',
+            ),
         ]
 
     def __str__(self):
         return f'Diagnóstico #{self.pk} - {self.serial}'
+
+
+class SecurityFinding(models.Model):
+    SEVERITY_CHOICES = [
+        ('info', 'Informativo'),
+        ('low', 'Baixo'),
+        ('medium', 'Médio'),
+        ('high', 'Alto'),
+        ('critical', 'Crítico'),
+    ]
+    EVIDENCE_CONFIDENCE_CHOICES = [
+        ('low', 'Baixa'),
+        ('medium', 'Média'),
+        ('high', 'Alta'),
+    ]
+    SUBJECT_TYPE_CHOICES = [
+        ('device', 'Dispositivo'),
+        ('app', 'Aplicativo'),
+    ]
+    STATUS_CHOICES = [
+        ('open', 'Aberto'),
+        ('reviewed', 'Revisado'),
+        ('remediation_pending', 'Remediação pendente'),
+        ('resolved', 'Resolvido'),
+        ('verification_failed', 'Verificação falhou'),
+        ('dismissed', 'Descartado'),
+    ]
+
+    diagnostico = models.ForeignKey(
+        Diagnostico,
+        on_delete=models.CASCADE,
+        related_name='security_findings',
+    )
+    finding_id = models.CharField(max_length=400)
+    rule_id = models.CharField(max_length=200)
+    category = models.CharField(max_length=100)
+    subject_type = models.CharField(max_length=20, choices=SUBJECT_TYPE_CHOICES)
+    subject_id = models.CharField(max_length=255)
+    title = models.CharField(max_length=240)
+    summary = models.TextField(blank=True)
+    severity = models.CharField(max_length=20, choices=SEVERITY_CHOICES)
+    evidence_confidence = models.CharField(max_length=20, choices=EVIDENCE_CONFIDENCE_CHOICES)
+    status = models.CharField(max_length=30, choices=STATUS_CHOICES, default='open')
+    recommendation = models.TextField(blank=True)
+    remediation_type = models.CharField(max_length=50, blank=True)
+    remediation_available = models.BooleanField(default=False)
+    evidence = models.JSONField(default=list)
+    score_contribution = models.DecimalField(
+        max_digits=5,
+        decimal_places=2,
+        null=True,
+        blank=True,
+        validators=[MinValueValidator(0), MaxValueValidator(100)],
+    )
+    scorer_version = models.CharField(max_length=20, null=True, blank=True)
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        ordering = ['-diagnostico__finalizado_em', '-id']
+        indexes = [
+            models.Index(fields=['rule_id'], name='secfind_rule_idx'),
+            models.Index(fields=['severity', 'category', 'status'], name='secfind_filter_idx'),
+        ]
+        constraints = [
+            models.UniqueConstraint(
+                fields=['diagnostico', 'rule_id', 'subject_type', 'subject_id'],
+                name='uniq_diag_security_finding',
+            ),
+        ]
+
+    def __str__(self):
+        return f'{self.rule_id} - diagnóstico #{self.diagnostico_id}'

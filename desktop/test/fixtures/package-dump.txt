@@ -1,0 +1,25 @@
+Packages:
+  Package [com.example.safe] (synthetic):
+    userId=10123
+    codePath=/data/app/~~synthetic/com.example.safe/base.apk
+    resourcePath=/data/app/~~synthetic/com.example.safe/base.apk
+    versionCode=42 minSdk=26 targetSdk=35
+    versionName=4.2
+    installerPackageName=com.android.vending
+    requested permissions:
+      android.permission.CAMERA
+      android.permission.SYSTEM_ALERT_WINDOW
+    install permissions:
+      android.permission.SYSTEM_ALERT_WINDOW: granted=true
+    User 0: ceDataInode=1 installed=true hidden=false suspended=false stopped=false enabled=0
+      runtime permissions:
+        android.permission.CAMERA: granted=false, flags=[]
+    User 10: ceDataInode=2 installed=true hidden=false suspended=false stopped=false enabled=1
+      runtime permissions:
+        android.permission.CAMERA: granted=true, flags=[]
+
+  Package [com.example.partial] (synthetic):
+    userId=10124
+    versionName=1.0
+    requested permissions:
+      android.permission.RECORD_AUDIO

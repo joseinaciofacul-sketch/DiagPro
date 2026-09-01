@@ -12,9 +12,13 @@ from django.contrib.auth import get_user_model
 from django.db.models import Count, Max
 from django.shortcuts import get_object_or_404
 from django.db import transaction
+from django.utils import timezone
 from copy import deepcopy
 
-from .models import Empresa, Cliente, Dispositivo, Analise, Relatorio, Plano, Licenca, Pagamento, Diagnostico
+from .models import (
+    Empresa, Cliente, Dispositivo, Analise, Relatorio, Plano, Licenca,
+    Pagamento, Diagnostico, SecurityFinding,
+)
 from .serializers import (
     EmpresaSerializer,
     ClienteSerializer,
@@ -26,6 +30,8 @@ from .serializers import (
     PagamentoSerializer,
     CheckoutSerializer,
     DiagnosticoSerializer,
+    SecurityFindingSummarySerializer,
+    SecurityFindingDetailSerializer,
     RemediationAuditSerializer,
     CurrentUserSerializer,
     ChangePasswordSerializer,
@@ -94,7 +100,7 @@ class ClienteViewSet(
                 dispositivos_count=Count('dispositivos', distinct=True),
                 ultimo_atendimento=Max('diagnosticos__finalizado_em'),
             )
-            .prefetch_related('diagnosticos')
+            .prefetch_related('diagnosticos__security_findings')
             .order_by('nome', 'id')
         )
 
@@ -264,12 +270,36 @@ class DiagnosticoViewSet(
     serializer_class = DiagnosticoSerializer
 
     def get_queryset(self):
-        return (
+        queryset = (
             Diagnostico.objects
             .filter(usuario=self.request.user)
             .select_related('cliente')
+            .prefetch_related('security_findings')
             .order_by('-finalizado_em', '-id')
         )
+        serial = self.request.query_params.get('serial')
+        cliente = self.request.query_params.get('cliente')
+        risk_level = self.request.query_params.get('security_risk_level')
+        risk_status = self.request.query_params.get('security_risk_status')
+        if serial:
+            if len(serial) > 128:
+                raise ValidationError({'serial': 'O serial informado é muito longo.'})
+            queryset = queryset.filter(serial=serial)
+        if cliente:
+            if not cliente.isdigit():
+                raise ValidationError({'cliente': 'Informe um cliente válido.'})
+            queryset = queryset.filter(cliente_id=int(cliente))
+        if risk_level:
+            allowed_levels = {'low', 'attention', 'moderate', 'elevated', 'very_high'}
+            if risk_level not in allowed_levels:
+                raise ValidationError({'security_risk_level': 'Classificação de risco inválida.'})
+            queryset = queryset.filter(security_risk_level=risk_level)
+        if risk_status:
+            allowed_statuses = {'calculated', 'partial', 'not_calculated', 'insufficient_data'}
+            if risk_status not in allowed_statuses:
+                raise ValidationError({'security_risk_status': 'Status de risco inválido.'})
+            queryset = queryset.filter(security_risk_status=risk_status)
+        return queryset
 
     def perform_create(self, serializer):
         serializer.save(usuario=self.request.user)
@@ -280,7 +310,20 @@ class DiagnosticoViewSet(
         capability = diagnostic_capability(request.user)
         if not capability['allowed']:
             return Response(capability, status=status.HTTP_403_FORBIDDEN)
-        return super().create(request, *args, **kwargs)
+        serializer = self.get_serializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
+        scan_id = serializer.get_security_projection().get('scan_id')
+        if scan_id is not None:
+            existing = self.get_queryset().filter(scan_id=scan_id).first()
+            if existing is not None:
+                if existing.resultado_tecnico != serializer.validated_data['resultado_tecnico']:
+                    raise ValidationError({
+                        'resultado_tecnico': 'O scanId já pertence a outro snapshot deste usuário.',
+                    })
+                return Response(self.get_serializer(existing).data, status=status.HTTP_200_OK)
+        self.perform_create(serializer)
+        headers = self.get_success_headers(serializer.data)
+        return Response(serializer.data, status=status.HTTP_201_CREATED, headers=headers)
 
     @action(detail=True, methods=['patch'], url_path='cliente')
     def associar_cliente(self, request, pk=None):
@@ -301,9 +344,20 @@ class DiagnosticoViewSet(
         diagnostico.save(update_fields=['cliente'])
         return Response(self.get_serializer(diagnostico).data)
 
-    @action(detail=True, methods=['post'], url_path='remediations')
+    @action(detail=True, methods=['get', 'post'], url_path='remediations')
     def registrar_remediacao(self, request, pk=None):
         diagnostico = self.get_object()
+        if request.method == 'GET':
+            resultado = diagnostico.resultado_tecnico or {}
+            remediations = resultado.get('remediations', []) if isinstance(resultado, dict) else []
+            if not isinstance(remediations, list):
+                raise ValidationError({'remediations': 'O histórico técnico existente é inválido.'})
+            return Response({
+                'diagnosticId': diagnostico.id,
+                'remediations': remediations,
+                'remediationsCount': len(remediations),
+            })
+
         serializer = RemediationAuditSerializer(
             data=request.data,
             context={'request': request, 'diagnostico': diagnostico},
@@ -311,6 +365,11 @@ class DiagnosticoViewSet(
         serializer.is_valid(raise_exception=True)
         remediation = dict(serializer.data)
         execution_id = remediation['executionId']
+        remediation['diagnosticId'] = diagnostico.id
+        remediation['diagProUser'] = {
+            'id': request.user.id,
+            'username': request.user.get_username(),
+        }
 
         with transaction.atomic():
             diagnostico = Diagnostico.objects.select_for_update().get(
@@ -322,31 +381,114 @@ class DiagnosticoViewSet(
             if not isinstance(remediations, list):
                 raise ValidationError({'remediations': 'O histórico técnico existente é inválido.'})
 
-            existing = next(
-                (
-                    item for item in remediations
-                    if isinstance(item, dict) and item.get('executionId') == execution_id
-                ),
-                None,
-            )
-            if existing is not None:
+            existing_index = next((
+                index for index, item in enumerate(remediations)
+                if isinstance(item, dict) and item.get('executionId') == execution_id
+            ), None)
+            existing = remediations[existing_index] if existing_index is not None else None
+            if existing is not None and existing.get('status') != 'remediation_pending':
+                if existing != remediation:
+                    raise ValidationError({
+                        'executionId': 'Esta ação já possui um resultado final diferente.',
+                    })
                 return Response({
                     'diagnosticId': diagnostico.id,
                     'created': False,
                     'duplicate': True,
+                    'updated': False,
                     'remediation': existing,
                     'remediationsCount': len(remediations),
                 })
 
-            remediations.append(remediation)
+            updated = existing is not None
+            if updated:
+                if remediation['status'] == 'remediation_pending' and existing != remediation:
+                    raise ValidationError({'executionId': 'A ação pendente já foi registrada com outro conteúdo.'})
+                if existing == remediation:
+                    return Response({
+                        'diagnosticId': diagnostico.id,
+                        'created': False,
+                        'duplicate': True,
+                        'updated': False,
+                        'remediation': existing,
+                        'remediationsCount': len(remediations),
+                    })
+                remediations[existing_index] = remediation
+            else:
+                remediations.append(remediation)
             resultado['remediations'] = remediations
             diagnostico.resultado_tecnico = resultado
             diagnostico.save(update_fields=['resultado_tecnico'])
+            projected_status = {
+                'remediation_pending': 'remediation_pending',
+                'resolved': 'resolved',
+                'failed': 'verification_failed' if (
+                    remediation.get('actionDispatched') or not remediation.get('actionId')
+                ) else 'open',
+                'not_verified': 'verification_failed',
+                'verification_failed': 'verification_failed',
+                'inconclusive': 'verification_failed',
+                'canceled': 'open',
+                'device_disconnected': 'verification_failed' if remediation.get('actionDispatched') else 'open',
+                'not_authorized': 'verification_failed' if remediation.get('actionDispatched') else 'open',
+                'not_supported': 'verification_failed' if remediation.get('actionDispatched') else 'open',
+            }[remediation['status']]
+            finding_query = SecurityFinding.objects.filter(diagnostico=diagnostico)
+            if remediation.get('projectionId'):
+                finding_query = finding_query.filter(pk=remediation['projectionId'])
+            else:
+                finding_query = finding_query.filter(finding_id=remediation['findingId'])
+            finding_query.update(status=projected_status, updated_at=timezone.now())
 
         return Response({
             'diagnosticId': diagnostico.id,
-            'created': True,
+            'created': not updated,
             'duplicate': False,
+            'updated': updated,
             'remediation': remediation,
             'remediationsCount': len(remediations),
-        }, status=status.HTTP_201_CREATED)
+        }, status=status.HTTP_200_OK if updated else status.HTTP_201_CREATED)
+
+
+class SecurityFindingViewSet(viewsets.ReadOnlyModelViewSet):
+    http_method_names = ['get', 'head', 'options']
+
+    def get_serializer_class(self):
+        return SecurityFindingDetailSerializer if self.action == 'retrieve' else SecurityFindingSummarySerializer
+
+    def get_queryset(self):
+        queryset = (
+            SecurityFinding.objects
+            .filter(diagnostico__usuario=self.request.user)
+            .select_related('diagnostico', 'diagnostico__cliente')
+            .order_by('-diagnostico__finalizado_em', '-id')
+        )
+        diagnostico = self.request.query_params.get('diagnostico')
+        severity = self.request.query_params.get('severity')
+        category = self.request.query_params.get('category')
+        finding_status = self.request.query_params.get('status')
+        rule_id = self.request.query_params.get('rule_id')
+
+        if diagnostico:
+            if not diagnostico.isdigit():
+                raise ValidationError({'diagnostico': 'Informe um diagnóstico válido.'})
+            queryset = queryset.filter(diagnostico_id=int(diagnostico))
+        if severity:
+            allowed = {choice[0] for choice in SecurityFinding.SEVERITY_CHOICES}
+            if severity not in allowed:
+                raise ValidationError({'severity': 'Severidade inválida.'})
+            queryset = queryset.filter(severity=severity)
+        if category:
+            if len(category) > 100:
+                raise ValidationError({'category': 'Categoria inválida.'})
+            queryset = queryset.filter(category=category)
+        if finding_status:
+            allowed = {choice[0] for choice in SecurityFinding.STATUS_CHOICES}
+            if finding_status not in allowed:
+                raise ValidationError({'status': 'Status de finding inválido.'})
+            queryset = queryset.filter(status=finding_status)
+        if rule_id:
+            if len(rule_id) > 200:
+                raise ValidationError({'rule_id': 'Rule ID inválido.'})
+            queryset = queryset.filter(rule_id=rule_id)
+        return queryset

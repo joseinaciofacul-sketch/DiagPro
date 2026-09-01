@@ -1,0 +1,3 @@
+package:/data/app/~~synthetic/com.example.safe/base.apk=com.example.safe
+package:/data/app/~~synthetic/com.example.partial/base.apk=com.example.partial
+unexpected output

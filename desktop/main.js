@@ -4,6 +4,7 @@ const path = require('path')
 const { ADB_ERROR_CODES } = require('./adb/adbErrors')
 const { createScanCoordinator } = require('./adb/scanCoordinator')
 const { isMercadoPagoCheckoutUrl } = require('./payments/checkout')
+const { rendererTarget } = require('./rendererTarget')
 const {
   verificarEstado,
   cancelarRemediacao,
@@ -66,7 +67,13 @@ function createWindow() {
   // Abre o DiagPro maximizado
   mainWindow.maximize()
 
-  mainWindow.loadURL('http://127.0.0.1:5173')
+  const target = rendererTarget({
+    packaged: app.isPackaged,
+    appDirectory: __dirname,
+    devServerUrl: process.env.DIAGPRO_RENDERER_URL,
+  })
+  if (target.kind === 'file') mainWindow.loadFile(target.value)
+  else mainWindow.loadURL(target.value)
 
   mainWindow.on('closed', () => {
     mainWindow = null

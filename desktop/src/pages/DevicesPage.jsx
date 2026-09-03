@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useState } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import {
   AlertTriangle,
   AppWindow,
@@ -20,7 +20,6 @@ import {
   Usb,
   X,
 } from 'lucide-react'
-import useDeviceStatus from '../hooks/useDeviceStatus.js'
 import { listarDiagnosticos } from '../services/diagnostics.js'
 import './DevicesPage.css'
 
@@ -234,8 +233,7 @@ function formatDiagnosticDate(value) {
   return Number.isNaN(date.getTime()) ? EMPTY_VALUE : date.toLocaleString('pt-BR')
 }
 
-function DevicesPage({ accessToken, scanResult = null, onStartDiagnostic, onOpenScanner, onOpenReport }) {
-  const dispositivo = useDeviceStatus()
+function DevicesPage({ accessToken, dispositivo = { status: 'waiting' }, scanResult = null, onStartDiagnostic, onOpenScanner, onOpenReport }) {
   const [apps, setApps] = useState([])
   const [appsState, setAppsState] = useState({ status: 'idle', message: '' })
   const [reloadToken, setReloadToken] = useState(0)
@@ -252,6 +250,9 @@ function DevicesPage({ accessToken, scanResult = null, onStartDiagnostic, onOpen
 
   const isConnected = dispositivo?.status === 'connected' && Boolean(dispositivo?.serial)
   const serial = dispositivo?.serial || ''
+  const currentDeviceRef = useRef({ isConnected, serial })
+  const previousDeviceRef = useRef({ isConnected, serial })
+  currentDeviceRef.current = { isConnected, serial }
   const deviceState = getDeviceState(dispositivo?.status)
   const scanData = useMemo(() => resolveScanData(scanResult), [scanResult])
   const normalisedApps = useMemo(() => apps.map(normaliseApp), [apps])
@@ -346,13 +347,25 @@ function DevicesPage({ accessToken, scanResult = null, onStartDiagnostic, onOpen
   }, [isConnected, reloadToken, serial])
 
   useEffect(() => {
-    if (!isConnected) {
-      setRemovalModal(null)
-      setDetailApp(null)
-      setPreviewingPackage('')
-      setRemoving(false)
+    const previous = previousDeviceRef.current
+    const deviceChanged = previous.serial && serial && previous.serial !== serial
+    previousDeviceRef.current = { isConnected, serial }
+    if (isConnected && !deviceChanged) return
+
+    if (removalModal?.preview?.actionId && typeof getDiagproApi()?.cancelRemediation === 'function') {
+      void getDiagproApi().cancelRemediation({
+        actionId: removalModal.preview.actionId,
+        confirmationToken: removalModal.token,
+      })
     }
-  }, [isConnected])
+    setRemovalModal(null)
+    setDetailApp(null)
+    setPreviewingPackage('')
+    setRemoving(false)
+    setFeedback(deviceChanged
+      ? { type: 'error', message: 'O dispositivo conectado mudou. Abra novamente os detalhes ou o preview no aparelho atual.' }
+      : null)
+  }, [isConnected, serial])
 
   const refreshApps = useCallback(() => {
     if (!isConnected) return
@@ -381,9 +394,17 @@ function DevicesPage({ accessToken, scanResult = null, onStartDiagnostic, onOpen
 
     setFeedback(null)
 
+    const requestedSerial = serial
     setPreviewingPackage(app.packageName)
     try {
-      const preview = await api.getRemovalPreview({ serial, packageName: app.packageName })
+      const preview = await api.getRemovalPreview({ serial: requestedSerial, packageName: app.packageName })
+      if (!currentDeviceRef.current.isConnected || currentDeviceRef.current.serial !== requestedSerial) {
+        if (preview?.actionId && typeof api.cancelRemediation === 'function') {
+          void api.cancelRemediation({ actionId: preview.actionId, confirmationToken: preview.confirmationToken })
+        }
+        setFeedback({ type: 'error', message: 'O dispositivo conectado mudou durante a validação. Abra um novo preview.' })
+        return
+      }
       if (preview?.ok !== true) {
         setFeedback({
           type: 'error',
@@ -408,6 +429,7 @@ function DevicesPage({ accessToken, scanResult = null, onStartDiagnostic, onOpen
 
       setRemovalModal({
         app,
+        serial: requestedSerial,
         token: confirmationToken,
         preview,
       })
@@ -435,6 +457,7 @@ function DevicesPage({ accessToken, scanResult = null, onStartDiagnostic, onOpen
     if (
       !removalModal
       || !serial
+      || removalModal.serial !== serial
       || !removalModal.token
       || removalModal.app?.type?.kind !== 'user'
     ) return
@@ -477,15 +500,16 @@ function DevicesPage({ accessToken, scanResult = null, onStartDiagnostic, onOpen
     }
   }, [removalModal, serial])
 
-  const storage = scanData?.armazenamento
-  const memory = scanData?.memoria
-  const storageUsed = formatGb(storage?.usadoGb)
+  const storage = scanData?.storage ?? scanData?.armazenamento
+  const memory = scanData?.memory ?? scanData?.memoria
+  const storageUsed = formatGb(storage?.usedGb ?? storage?.usadoGb)
   const storageTotal = formatGb(storage?.totalGb)
-  const storageFree = formatGb(storage?.livreGb)
-  const memoryAvailable = formatGb(memory?.disponivelGb)
+  const storageFree = formatGb(storage?.freeGb ?? storage?.livreGb)
+  const memoryAvailable = formatGb(memory?.availableGb ?? memory?.disponivelGb)
   const memoryTotal = formatGb(memory?.totalGb)
+  const scanAppsTotal = scanData?.apps?.total ?? scanData?.totalApps
   const hasRecognisedScanData = Boolean(
-    storageUsed || storageTotal || storageFree || memoryAvailable || memoryTotal || hasValue(scanData?.totalApps),
+    storageUsed || storageTotal || storageFree || memoryAvailable || memoryTotal || hasValue(scanAppsTotal),
   )
   const selectedLatestDiagnostic = selectedHistoricalDevice?.latest || null
   const selectedLatestFindings = technicalItems(selectedLatestDiagnostic, 'findings')
@@ -525,18 +549,18 @@ function DevicesPage({ accessToken, scanResult = null, onStartDiagnostic, onOpen
           <div className="dp-devices-device-detail">
             <div className="dp-devices-device-icon"><Smartphone size={42} /></div>
             <div className="dp-devices-device-summary">
-              <h2>{[dispositivo.fabricante, dispositivo.modelo].filter(Boolean).join(' ') || 'Dispositivo conectado'}</h2>
+              <h2>{[dispositivo.manufacturer, dispositivo.commercialModel || dispositivo.model].filter(Boolean).join(' ') || 'Dispositivo conectado'}</h2>
               <p>{deviceState.detail}</p>
               <div className="dp-devices-device-meta">
                 <span><Usb size={14} /> USB / ADB</span>
-                <span><Battery size={14} /> Bateria: {hasValue(dispositivo.bateria) ? `${dispositivo.bateria}%` : EMPTY_VALUE}</span>
+                <span><Battery size={14} /> Bateria: {hasValue(dispositivo.battery?.level) ? `${dispositivo.battery.level}%` : EMPTY_VALUE}</span>
               </div>
             </div>
             <div className="dp-devices-fields" aria-label="Dados técnicos do dispositivo">
               <DeviceField label="Serial" value={dispositivo.serial} />
-              <DeviceField label="Fabricante" value={dispositivo.fabricante} />
-              <DeviceField label="Modelo" value={dispositivo.modelo} />
-              <DeviceField label="Android" value={dispositivo.versaoAndroid} />
+              <DeviceField label="Fabricante" value={dispositivo.manufacturer} />
+              <DeviceField label="Modelo" value={dispositivo.model} />
+              <DeviceField label="Android" value={dispositivo.androidVersion} />
               <DeviceField label="SDK Android" value={dispositivo.sdk} />
               <DeviceField label="Status ADB" value={dispositivo.adbStatus || 'device'} />
             </div>
@@ -601,12 +625,12 @@ function DevicesPage({ accessToken, scanResult = null, onStartDiagnostic, onOpen
                   </div>
                 </div>
               )}
-              {hasValue(scanData.totalApps) && (
+              {hasValue(scanAppsTotal) && (
                 <div className="dp-devices-metric">
                   <Package size={21} />
                   <div>
                     <span>Aplicativos identificados</span>
-                    <strong>{scanData.totalApps}</strong>
+                    <strong>{scanAppsTotal}</strong>
                   </div>
                 </div>
               )}

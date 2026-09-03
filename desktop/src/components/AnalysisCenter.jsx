@@ -35,19 +35,25 @@ function AnalysisCenter({
   const running = scanStatus === 'running'
   const complete = scanStatus === 'complete'
   const attention = scanStatus === 'attention'
+  const interrupted = ['canceled', 'failed', 'disconnected'].includes(scanStatus)
   const progress = typeof scan?.progress === 'number' ? Math.min(100, Math.max(0, scan.progress)) : 0
   const currentStage = scan?.stage || null
   const currentIndex = currentStage && STAGE_ORDER[currentStage] != null ? STAGE_ORDER[currentStage] : -1
 
   function getStepState(index) {
-    if (complete) return 'completed'
-    if (!running && !attention) return 'pending'
+    if (complete || attention) return 'completed'
+    if (!running && !interrupted) return 'pending'
     if (index < currentIndex) return 'completed'
-    if (index === currentIndex) return 'active'
+    if (index === currentIndex) return interrupted ? 'interrupted' : 'active'
     return 'pending'
   }
 
-  const idleWithoutDevice = !connected && !running
+  const idleWithoutDevice = !connected && scanStatus === 'idle'
+  const terminalTitle = scanStatus === 'canceled'
+    ? 'Análise cancelada'
+    : scanStatus === 'disconnected'
+      ? 'Análise interrompida'
+      : 'Não foi possível concluir a análise'
 
   return (
     <section className={`analysis-center analysis-center--${scanStatus}`} aria-label="Central de Análise">
@@ -62,7 +68,10 @@ function AnalysisCenter({
         </div>
         {running && <span className="analysis-center__status analysis-center__status--running"><span className="analysis-center__status-dot" /> Análise em andamento</span>}
         {complete && <span className="analysis-center__status analysis-center__status--success"><Check size={13} /> Diagnóstico concluído</span>}
-        {attention && <span className="analysis-center__status analysis-center__status--warning"><TriangleAlert size={13} /> Atenção necessária</span>}
+        {attention && <span className="analysis-center__status analysis-center__status--warning"><TriangleAlert size={13} /> Concluído com avisos</span>}
+        {scanStatus === 'canceled' && <span className="analysis-center__status analysis-center__status--warning"><TriangleAlert size={13} /> Análise cancelada</span>}
+        {scanStatus === 'disconnected' && <span className="analysis-center__status analysis-center__status--warning"><TriangleAlert size={13} /> Dispositivo desconectado</span>}
+        {scanStatus === 'failed' && <span className="analysis-center__status analysis-center__status--error"><TriangleAlert size={13} /> Falha na análise</span>}
         {idleWithoutDevice && <span className="analysis-center__status">Aguardando dispositivo</span>}
       </header>
 
@@ -78,10 +87,10 @@ function AnalysisCenter({
               {STEPS.map((step, index) => {
                 const Icon = step.icon
                 const state = getStepState(index)
-                return <div className="analysis-step-wrapper" key={step.id}><div className={`analysis-step analysis-step--${state}`}><div className="analysis-step__icon">{state === 'completed' ? <Check size={15} /> : <Icon size={16} />}</div><div className="analysis-step__copy"><strong>{step.label}</strong><span>{state === 'completed' ? 'Concluído' : state === 'active' ? 'Em andamento' : 'Pendente'}</span></div></div>{index < STEPS.length - 1 && <div className={`analysis-connector ${getStepState(index + 1) !== 'pending' ? 'analysis-connector--active' : ''}`} />}</div>
+                return <div className="analysis-step-wrapper" key={step.id}><div className={`analysis-step analysis-step--${state}`}><div className="analysis-step__icon">{state === 'completed' ? <Check size={15} /> : <Icon size={16} />}</div><div className="analysis-step__copy"><strong>{step.label}</strong><span>{state === 'completed' ? 'Concluído' : state === 'active' ? 'Em andamento' : state === 'interrupted' ? 'Interrompido' : 'Pendente'}</span></div></div>{index < STEPS.length - 1 && <div className={`analysis-connector ${getStepState(index + 1) !== 'pending' ? 'analysis-connector--active' : ''}`} />}</div>
               })}
             </div>
-            <div className="analysis-live"><div className="analysis-live__scanner"><div className="analysis-live__radar"><div className="analysis-live__radar-ring" /><div className="analysis-live__radar-ring analysis-live__radar-ring--2" /><div className="analysis-live__radar-core" /></div></div><div className="analysis-live__content"><strong>{running ? scan?.message || 'Analisando dispositivo...' : complete ? 'Diagnóstico concluído' : attention ? 'A análise encontrou itens que precisam de atenção' : 'Pronto para iniciar'}</strong><span>{running && scan?.details ? scan.details : complete ? 'Revise os resultados antes de finalizar o atendimento.' : attention ? 'Abra os detalhes para conferir os itens encontrados.' : 'Selecione um modo de análise e inicie o scan.'}</span>{(running || complete || attention) && <div className="analysis-progress"><div className="analysis-progress__head"><span>Progresso da análise</span><strong>{progress}%</strong></div><div className="analysis-progress__track"><div className="analysis-progress__value" style={{ width: `${progress}%` }}>{running && <span className="analysis-progress__beam" />}</div></div></div>}{running && <div className="analysis-metrics">{scan?.checkedItems != null && <span><strong>{scan.checkedItems}</strong> itens verificados</span>}{scan?.alertCount != null && <span><strong>{scan.alertCount}</strong> alertas</span>}{scan?.elapsed && <span>{scan.elapsed}</span>}</div>}</div></div>
+            <div className="analysis-live"><div className="analysis-live__scanner"><div className="analysis-live__radar"><div className="analysis-live__radar-ring" /><div className="analysis-live__radar-ring analysis-live__radar-ring--2" /><div className="analysis-live__radar-core" /></div></div><div className="analysis-live__content"><strong>{running ? scan?.message || 'Analisando dispositivo...' : complete ? 'Diagnóstico concluído' : attention ? 'Análise concluída com avisos de coleta' : interrupted ? terminalTitle : 'Pronto para iniciar'}</strong><span>{running && scan?.details ? scan.details : complete ? 'Revise os resultados antes de finalizar o atendimento.' : attention ? 'O resultado foi preservado; consulte os avisos técnicos nos detalhes.' : interrupted ? scan?.message || 'Inicie uma nova análise quando o dispositivo estiver pronto.' : 'Selecione um modo de análise e inicie o scan.'}</span>{(running || complete || attention || interrupted) && <div className="analysis-progress"><div className="analysis-progress__head"><span>Progresso da análise</span><strong>{progress}%</strong></div><div className="analysis-progress__track"><div className="analysis-progress__value" style={{ width: `${progress}%` }}>{running && <span className="analysis-progress__beam" />}</div></div></div>}{running && <div className="analysis-metrics">{scan?.checkedItems != null && <span><strong>{scan.checkedItems}</strong> itens verificados</span>}{scan?.alertCount != null && <span><strong>{scan.alertCount}</strong> alertas</span>}{scan?.elapsed && <span>{scan.elapsed}</span>}</div>}</div></div>
           </div>
           <footer className="analysis-center__footer">
             {!running && !complete && !attention && connected && <button type="button" className="analysis-button analysis-button--primary" onClick={onStartScan}><Play size={16} /> Iniciar análise</button>}

@@ -11,7 +11,9 @@ import SettingsPage from './pages/SettingsPage.jsx'
 import SubscriptionPage from './pages/SubscriptionPage.jsx'
 import ThreatsPage from './pages/ThreatsPage.jsx'
 import PlaceholderPage from './pages/PlaceholderPage.jsx'
+import useDeviceStatus from './hooks/useDeviceStatus.js'
 import { salvarTokens, limparTokens, renovarSessao } from './utils/auth.js'
+import { reconcileScanSession, sessionForConnectedDevice } from './utils/scanSession.mjs'
 
 function App() {
   const [token, setToken] = useState(null)
@@ -19,6 +21,13 @@ function App() {
   const [activePage, setActivePage] = useState('Dashboard')
   const [selectedDiagnosticId, setSelectedDiagnosticId] = useState(null)
   const [verificandoSessao, setVerificandoSessao] = useState(true)
+  const [scanSession, setScanSession] = useState(null)
+  const [scannerRequest, setScannerRequest] = useState(null)
+  const dispositivo = useDeviceStatus()
+
+  useEffect(() => {
+    setScanSession((current) => reconcileScanSession(current, dispositivo))
+  }, [dispositivo.serial, dispositivo.status])
 
   useEffect(() => {
     async function restaurarSessao() {
@@ -46,12 +55,21 @@ function App() {
     setUsername('')
     setActivePage('Dashboard')
     setSelectedDiagnosticId(null)
+    setScanSession(null)
+    setScannerRequest(null)
     limparTokens()
   }
 
   function handleNavigate(page) {
     setSelectedDiagnosticId(null)
+    if (page === 'Scanner') setScannerRequest(null)
     setActivePage(page)
+  }
+
+  function openScanner(mode = null) {
+    setSelectedDiagnosticId(null)
+    setScannerRequest({ mode, requestedAt: Date.now() })
+    setActivePage('Scanner')
   }
 
   function openDiagnosticReport(diagnosticId) {
@@ -73,10 +91,11 @@ function App() {
   }
 
   function renderPage() {
-    if (activePage === 'Dashboard') return <DashboardPage username={username} />
-    if (activePage === 'Scanner') return <ScannerPage accessToken={token} onNavigate={handleNavigate} />
-    if (activePage === 'Dispositivos') return <DevicesPage accessToken={token} onOpenScanner={() => handleNavigate('Scanner')} onOpenReport={openDiagnosticReport} />
-    if (activePage === 'Ameaças') return <ThreatsPage accessToken={token} onNavigate={handleNavigate} onOpenReport={openDiagnosticReport} />
+    const currentScanSession = sessionForConnectedDevice(scanSession, dispositivo)
+    if (activePage === 'Dashboard') return <DashboardPage username={username} dispositivo={dispositivo} scanSession={currentScanSession} onOpenScanner={openScanner} onNavigate={handleNavigate} />
+    if (activePage === 'Scanner') return <ScannerPage accessToken={token} onNavigate={handleNavigate} dispositivo={dispositivo} initialMode={scannerRequest?.mode} scanSession={currentScanSession} onScanSessionChange={setScanSession} />
+    if (activePage === 'Dispositivos') return <DevicesPage accessToken={token} dispositivo={dispositivo} scanResult={currentScanSession?.result || null} onOpenScanner={() => openScanner()} onStartDiagnostic={() => openScanner()} onOpenReport={openDiagnosticReport} />
+    if (activePage === 'Ameaças') return <ThreatsPage accessToken={token} onNavigate={handleNavigate} onOpenReport={openDiagnosticReport} device={dispositivo} />
     if (activePage === 'Relatórios') return <ReportsPage accessToken={token} diagnosticId={selectedDiagnosticId} />
     if (activePage === 'Clientes') return <ClientsPage accessToken={token} onOpenReport={openDiagnosticReport} />
     if (activePage === 'Visão Gerencial') return <ManagementPage accessToken={token} onOpenReport={openDiagnosticReport} />

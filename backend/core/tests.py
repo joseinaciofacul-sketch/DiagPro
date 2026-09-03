@@ -58,7 +58,7 @@ class DiagnosticoApiTests(APITestCase):
             'apps': {'total': 20, 'userTotal': 8, 'systemTotal': 12},
             'warnings': [],
             'stages': {'apps': {'status': 'completed'}},
-            'resultado_tecnico': {'mode': 'quick', 'finishedAt': self.fim.isoformat()},
+            'resultado_tecnico': {'status': 'completed', 'mode': 'quick', 'finishedAt': self.fim.isoformat()},
         }
         dados.update(overrides)
         return dados
@@ -131,6 +131,33 @@ class DiagnosticoApiTests(APITestCase):
         self.assertIn('modulos', resposta.data)
         self.assertIn('health_score', resposta.data)
 
+    def test_resultado_nao_concluido_nao_e_persistido(self):
+        self.autenticar(self.usuario)
+
+        for scan_status in (None, 'running', 'canceled', 'failed', 'device_disconnected'):
+            with self.subTest(scan_status=scan_status):
+                technical_result = {'mode': 'quick'}
+                if scan_status is not None:
+                    technical_result['status'] = scan_status
+                resposta = self.client.post(
+                    '/api/diagnosticos/',
+                    self.payload(resultado_tecnico=technical_result),
+                    format='json',
+                )
+                self.assertEqual(resposta.status_code, status.HTTP_400_BAD_REQUEST)
+                self.assertIn('resultado_tecnico', resposta.data)
+
+        self.assertEqual(Diagnostico.objects.count(), 0)
+
+    def test_resultado_parcial_pode_ser_persistido(self):
+        resposta = self.criar_para(
+            self.usuario,
+            resultado_tecnico={'status': 'partial', 'mode': 'quick', 'warnings': [{'stage': 'apps'}]},
+        )
+
+        self.assertEqual(resposta.status_code, status.HTTP_201_CREATED)
+        self.assertEqual(resposta.data['resultado_tecnico']['status'], 'partial')
+
 
 class DiagnosticLicenseEnforcementApiTests(APITestCase):
     def setUp(self):
@@ -154,7 +181,7 @@ class DiagnosticLicenseEnforcementApiTests(APITestCase):
             'health_available': None,
             'warnings': [],
             'stages': {'system': {'status': 'completed'}},
-            'resultado_tecnico': {'mode': 'quick', 'serial': serial},
+            'resultado_tecnico': {'status': 'completed', 'mode': 'quick', 'serial': serial},
         }
 
     def criar_plano(self, limit=None):
@@ -1004,7 +1031,7 @@ class MercadoPagoPaymentsApiTests(APITestCase):
             'iniciado_em': (now - timedelta(minutes=1)).isoformat(),
             'finalizado_em': now.isoformat(),
             'health_available': None,
-            'resultado_tecnico': {'mode': 'quick'},
+            'resultado_tecnico': {'status': 'completed', 'mode': 'quick'},
         }
 
     def test_checkout_sem_jwt_e_bloqueado(self):

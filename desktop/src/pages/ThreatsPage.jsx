@@ -1,9 +1,8 @@
-import { useCallback, useEffect, useMemo, useState } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import {
   AlertTriangle, ChevronRight, Clock3, FileText, Filter,
   Loader2, RefreshCw, Search, ShieldAlert, Smartphone, Trash2, Wrench, X,
 } from 'lucide-react'
-import useDeviceStatus from '../hooks/useDeviceStatus.js'
 import { listarDiagnosticos, salvarRemediacao } from '../services/diagnostics.js'
 import './ThreatsPage.css'
 
@@ -158,8 +157,7 @@ function buildOccurrences(diagnostics) {
   }).sort((a, b) => (b.diagnosticTime ?? -Infinity) - (a.diagnosticTime ?? -Infinity))
 }
 
-function ThreatsPage({ accessToken, onNavigate, onOpenReport }) {
-  const device = useDeviceStatus()
+function ThreatsPage({ accessToken, onNavigate, onOpenReport, device = { status: 'waiting' } }) {
   const [diagnostics, setDiagnostics] = useState([])
   const [loadState, setLoadState] = useState({ status: 'loading', message: '' })
   const [statusFilter, setStatusFilter] = useState('all')
@@ -167,6 +165,8 @@ function ThreatsPage({ accessToken, onNavigate, onOpenReport }) {
   const [query, setQuery] = useState('')
   const [selectedOccurrence, setSelectedOccurrence] = useState(null)
   const [remediationFlow, setRemediationFlow] = useState(null)
+  const currentDeviceRef = useRef(device)
+  currentDeviceRef.current = device
 
   const loadDiagnostics = useCallback(async () => {
     setLoadState({ status: 'loading', message: '' })
@@ -197,6 +197,25 @@ function ThreatsPage({ accessToken, onNavigate, onOpenReport }) {
       ))
     })
   }, [])
+
+  useEffect(() => {
+    if (!['preparing', 'awaiting_confirmation'].includes(remediationFlow?.status)) return
+    const expectedSerial = remediationFlow.occurrence?.diagnostic?.serial
+    if (device.status === 'connected' && device.serial === expectedSerial) return
+    if (remediationFlow.preview?.actionId) {
+      void window.diagpro?.cancelRemediation?.({
+        actionId: remediationFlow.preview.actionId,
+        confirmationToken: remediationFlow.confirmationToken,
+      })
+    }
+    setRemediationFlow((current) => current ? {
+      ...current,
+      status: 'failed',
+      message: device.status === 'connected'
+        ? 'O dispositivo conectado mudou. Abra um novo preview para o aparelho correto.'
+        : 'O dispositivo foi desconectado. Reconecte-o e abra um novo preview.',
+    } : current)
+  }, [device.serial, device.status])
 
   const occurrences = useMemo(() => buildOccurrences(diagnostics), [diagnostics])
   const semanticCounts = useMemo(() => diagnostics.reduce((counts, diagnostic) => {
@@ -245,10 +264,11 @@ function ThreatsPage({ accessToken, onNavigate, onOpenReport }) {
 
   async function openRemediationPreview() {
     if (!canOpenPreview || !selectedPackage || typeof window.diagpro?.getRemovalPreview !== 'function') return
+    const expectedSerial = selected.diagnostic.serial
     setRemediationFlow({ status: 'preparing', occurrence: selected, message: '', syncMessage: '' })
     try {
       const preview = await window.diagpro.getRemovalPreview({
-        serial: selected.diagnostic.serial,
+        serial: expectedSerial,
         packageName: selectedPackage,
         finding: {
           id: selected.finding.id,
@@ -264,6 +284,19 @@ function ThreatsPage({ accessToken, onNavigate, onOpenReport }) {
         action: { type: 'uninstall_user_app', availability: 'available' },
         projectionId: selected.finding.projection_id || null,
       })
+      if (currentDeviceRef.current?.status !== 'connected' || currentDeviceRef.current?.serial !== expectedSerial) {
+        if (preview?.actionId) {
+          void window.diagpro?.cancelRemediation?.({
+            actionId: preview.actionId,
+            confirmationToken: preview.confirmationToken,
+          })
+        }
+        setRemediationFlow({
+          status: 'failed', occurrence: selected,
+          message: 'A conexão do dispositivo mudou durante a validação. Abra um novo preview.', syncMessage: '',
+        })
+        return
+      }
       if (preview?.ok !== true || !preview.actionId || !preview.confirmationToken || !Number.isInteger(preview.currentUserId)) {
         setRemediationFlow({ status: 'failed', occurrence: selected, message: preview?.message || 'Não foi possível preparar a remoção segura.', syncMessage: '' })
         return
@@ -299,6 +332,18 @@ function ThreatsPage({ accessToken, onNavigate, onOpenReport }) {
       || !flow.preview?.actionId
       || typeof window.diagpro?.uninstallUserApp !== 'function'
     ) return
+    if (device.status !== 'connected' || device.serial !== occurrence?.diagnostic?.serial) {
+      void window.diagpro?.cancelRemediation?.({
+        actionId: flow.preview.actionId,
+        confirmationToken: flow.confirmationToken,
+      })
+      setRemediationFlow((current) => current ? {
+        ...current,
+        status: 'failed',
+        message: 'O dispositivo não corresponde mais ao diagnóstico. Abra um novo preview.',
+      } : current)
+      return
+    }
     const startedAt = new Date().toISOString()
     const pending = {
       ...flow.preview.auditContext,

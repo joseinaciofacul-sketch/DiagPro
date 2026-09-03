@@ -27,7 +27,7 @@ BASE_DIR = Path(__file__).resolve().parent.parent
 SECRET_KEY = os.environ.get('SECRET_KEY')
 
 # SECURITY WARNING: don't run with debug turned on in production!
-DEBUG = True
+DEBUG = os.environ.get('DJANGO_DEBUG', 'true').lower() in {'1', 'true', 'yes'}
 
 
 def env_list(name, default=''):
@@ -154,10 +154,8 @@ REST_FRAMEWORK = {
 SIMPLE_JWT = {
     'CHECK_REVOKE_TOKEN': True,
 }
-CORS_ALLOWED_ORIGINS = [
-    "http://localhost:5173",
-    "http://127.0.0.1:5173",
-]
+_development_cors_origins = 'http://localhost:5173,http://127.0.0.1:5173,null,file://' if DEBUG else ''
+CORS_ALLOWED_ORIGINS = env_list('DJANGO_CORS_ALLOWED_ORIGINS', _development_cors_origins)
 
 # Mercado Pago: credenciais e URLs existem somente no backend.
 MERCADO_PAGO_ACCESS_TOKEN = os.environ.get('MERCADO_PAGO_ACCESS_TOKEN', '')

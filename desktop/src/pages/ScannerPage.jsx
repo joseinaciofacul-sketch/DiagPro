@@ -4,11 +4,11 @@ import {
   Cpu, CreditCard, HardDrive, Loader2, MemoryStick, Play, Settings2, ShieldCheck,
   SlidersHorizontal, Smartphone, Trash2, RotateCcw, Wrench, X,
 } from 'lucide-react'
-import useDeviceStatus from '../hooks/useDeviceStatus.js'
 import DeviceCard from '../components/DeviceCard.jsx'
 import { salvarDiagnostico, salvarRemediacao } from '../services/diagnostics.js'
 import { getDiagnosticCapability } from '../services/subscription.js'
 import { getDefaultScanMode } from '../utils/preferences.js'
+import { scanFailureState, updateMatchingScanSession } from '../utils/scanSession.mjs'
 import './ScannerPage.css'
 
 const MODOS = [
@@ -137,17 +137,31 @@ function resumirHash(hash) {
     : hash || 'Não verificado'
 }
 
-function ScannerPage({ accessToken, onNavigate }) {
-  const dispositivo = useDeviceStatus()
-  const [modo, setModo] = useState(() => getDefaultScanMode())
+function etapasDoResultado(result) {
+  return Object.entries(result?.stages || {}).reduce((etapas, [id, etapa]) => {
+    if (!STATUS_ETAPAS[etapa?.status]) return etapas
+    return [...etapas, { id, label: NOMES_ETAPAS[id] || id, status: etapa.status }]
+  }, [])
+}
+
+function ScannerPage({ accessToken, onNavigate, dispositivo, initialMode, scanSession, onScanSessionChange }) {
+  const modoInicial = MODOS.some((item) => item.id === initialMode)
+    ? initialMode
+    : MODOS.some((item) => item.id === scanSession?.mode)
+      ? scanSession.mode
+      : getDefaultScanMode()
+  const resultadoInicial = ['completed', 'partial'].includes(scanSession?.status) ? scanSession.result : null
+  const [modo, setModo] = useState(modoInicial)
   const [modulos, setModulos] = useState(MODULOS_INICIAIS)
-  const [resultado, setResultado] = useState(null)
-  const [progresso, setProgresso] = useState(null)
-  const [etapas, setEtapas] = useState([])
+  const [resultado, setResultado] = useState(resultadoInicial)
+  const [progresso, setProgresso] = useState(resultadoInicial ? { progress: 100, label: scanSession?.status === 'partial' ? 'Análise concluída com avisos' : 'Análise concluída' } : null)
+  const [etapas, setEtapas] = useState(() => etapasDoResultado(resultadoInicial))
   const [carregando, setCarregando] = useState(false)
   const [erro, setErro] = useState('')
-  const [interrompido, setInterrompido] = useState(false)
-  const [persistencia, setPersistencia] = useState({ status: 'idle', id: null })
+  const [interrompido, setInterrompido] = useState('')
+  const [cancelado, setCancelado] = useState(false)
+  const [cancelamentoSolicitado, setCancelamentoSolicitado] = useState(false)
+  const [persistencia, setPersistencia] = useState(scanSession?.persistence || { status: 'idle', id: null })
   const [licenca, setLicenca] = useState({ status: 'checking', capability: null, message: '' })
   const [remediationStates, setRemediationStates] = useState({})
   const [remediationModal, setRemediationModal] = useState(null)
@@ -156,6 +170,9 @@ function ScannerPage({ accessToken, onNavigate }) {
   const proximoScanIdRef = useRef(0)
   const persistenciaDiagnosticoRef = useRef({ scanId: 0, id: null, data: null, promise: null })
   const remediationActionBindingsRef = useRef({})
+  const resultadoSerialRef = useRef(resultadoInicial ? scanSession?.serial : null)
+  const dispositivoAtualRef = useRef(dispositivo)
+  dispositivoAtualRef.current = dispositivo
   const findings = Array.isArray(resultado?.security?.findings) ? resultado.security.findings : []
   const securityRisk = resultado?.securityRisk || resultado?.security?.securityRisk || null
   const confirmedThreats = Array.isArray(resultado?.security?.confirmedThreats)
@@ -197,6 +214,10 @@ function ScannerPage({ accessToken, onNavigate }) {
       if (evento?.scanId && evento.scanId !== scanAtivo.id) return
 
       setProgresso(evento)
+      onScanSessionChange?.((current) => updateMatchingScanSession(current, scanAtivo.id, {
+        status: current?.status === 'cancel_requested' ? 'cancel_requested' : 'running',
+        progress: evento,
+      }))
 
       if (!evento?.stage || !STATUS_ETAPAS[evento.status]) return
       setEtapas((atuais) => {
@@ -214,10 +235,20 @@ function ScannerPage({ accessToken, onNavigate }) {
     })
 
     return () => {
-      if (scanAtivoRef.current) scanAtivoRef.current.valido = false
+      const scanAtivo = scanAtivoRef.current
+      if (scanAtivo?.valido) {
+        if (typeof window.diagpro?.cancelScan === 'function') void window.diagpro.cancelScan(scanAtivo.id)
+        scanAtivo.valido = false
+        onScanSessionChange?.((current) => updateMatchingScanSession(current, scanAtivo.id, {
+          status: 'canceled',
+          result: null,
+          persistence: { status: 'idle', id: null },
+          message: 'A análise foi cancelada ao sair do Scanner.',
+        }))
+      }
       unsubscribe()
     }
-  }, [])
+  }, [onScanSessionChange])
 
   useEffect(() => {
     if (!window.diagpro?.onRemediationProgress) return undefined
@@ -237,6 +268,13 @@ function ScannerPage({ accessToken, onNavigate }) {
       && (dispositivo.status !== 'connected' || dispositivo.serial !== scanAtivo.serial)
 
     if (perdeuDispositivoDoScan) {
+      const interruption = dispositivo.status === 'connected'
+        ? { status: 'device_changed', message: 'A análise foi interrompida porque o dispositivo conectado mudou.' }
+        : dispositivo.status === 'unauthorized'
+          ? { status: 'failed', message: 'A autorização da depuração USB foi perdida durante a análise. Autorize novamente e inicie um novo scan.' }
+          : dispositivo.status === 'offline'
+            ? { status: 'device_disconnected', message: 'O dispositivo ficou offline durante a análise. Reconecte o cabo USB e inicie um novo scan.' }
+            : { status: 'device_disconnected', message: MENSAGEM_INTERRUPCAO }
       if (typeof window.diagpro?.cancelScan === 'function') {
         void window.diagpro.cancelScan(scanAtivo.id)
       }
@@ -244,14 +282,39 @@ function ScannerPage({ accessToken, onNavigate }) {
       scanAtivo.interrompido = true
       setCarregando(false)
       setResultado(null)
-      setErro('')
-      setInterrompido(true)
+      setErro(interruption.status === 'failed' ? interruption.message : '')
+      setInterrompido(interruption.status === 'failed' ? '' : interruption.message)
+      setCancelado(false)
+      setCancelamentoSolicitado(false)
       setRemediationModal(null)
       setProgresso((atual) => ({
         ...atual,
         progress: atual?.progress ?? 0,
         label: 'Análise interrompida',
       }))
+      onScanSessionChange?.((current) => updateMatchingScanSession(current, scanAtivo.id, {
+        status: interruption.status,
+        result: null,
+        persistence: { status: 'idle', id: null },
+        message: interruption.message,
+      }))
+      return
+    }
+
+    const resultadoDeOutroDispositivo = resultadoSerialRef.current
+      && (dispositivo.status !== 'connected' || dispositivo.serial !== resultadoSerialRef.current)
+    if (resultadoDeOutroDispositivo) {
+      resultadoSerialRef.current = null
+      setResultado(null)
+      setProgresso(null)
+      setEtapas([])
+      setPersistencia({ status: 'idle', id: null })
+      setErro('')
+      setInterrompido('')
+      setCancelado(false)
+      setRemediationModal(null)
+      setRemediationStates({})
+      setOpenGuides({})
       return
     }
 
@@ -261,10 +324,12 @@ function ScannerPage({ accessToken, onNavigate }) {
       setEtapas([])
       setResultado(null)
       setErro('')
-      setInterrompido(false)
+      setInterrompido('')
+      setCancelado(false)
+      setCancelamentoSolicitado(false)
       setRemediationModal(null)
     }
-  }, [dispositivo.serial, dispositivo.status])
+  }, [dispositivo.serial, dispositivo.status, onScanSessionChange])
 
   const podeIniciar = dispositivo.status === 'connected'
     && !carregando
@@ -525,8 +590,13 @@ function ScannerPage({ accessToken, onNavigate }) {
       && (modo !== 'custom' || modulos.length > 0)
     if (!configuracaoValida || licenca.status !== 'allowed' || !window.diagpro?.startScan) return
 
+    const serialSolicitado = dispositivo.serial
     const capability = await verificarLicenca()
-    if (!capability?.allowed || dispositivo.status !== 'connected') return
+    if (
+      !capability?.allowed
+      || dispositivoAtualRef.current?.status !== 'connected'
+      || dispositivoAtualRef.current?.serial !== serialSolicitado
+    ) return
 
     const scanSequence = proximoScanIdRef.current + 1
     const scanId = typeof window.diagpro.createScanId === 'function'
@@ -534,7 +604,7 @@ function ScannerPage({ accessToken, onNavigate }) {
       : globalThis.crypto.randomUUID()
     const scanAtual = {
       id: scanId,
-      serial: dispositivo.serial,
+      serial: serialSolicitado,
       valido: true,
       interrompido: false,
     }
@@ -542,8 +612,11 @@ function ScannerPage({ accessToken, onNavigate }) {
     scanAtivoRef.current = scanAtual
     setCarregando(true)
     setErro('')
-    setInterrompido(false)
+    setInterrompido('')
+    setCancelado(false)
+    setCancelamentoSolicitado(false)
     setResultado(null)
+    resultadoSerialRef.current = null
     setPersistencia({ status: 'idle', id: null })
     persistenciaDiagnosticoRef.current = { scanId: scanAtual.id, id: null, data: null, promise: null }
     remediationActionBindingsRef.current = {}
@@ -551,21 +624,58 @@ function ScannerPage({ accessToken, onNavigate }) {
     setRemediationModal(null)
     setOpenGuides({})
     setEtapas([])
-    setProgresso({ progress: 0, label: 'Preparando análise...' })
+    const progressoInicial = { progress: 0, label: 'Preparando análise...' }
+    setProgresso(progressoInicial)
+    onScanSessionChange?.({
+      scanId: scanAtual.id,
+      serial: scanAtual.serial,
+      mode: modo,
+      status: 'running',
+      progress: progressoInicial,
+      result: null,
+      persistence: { status: 'idle', id: null },
+      message: '',
+    })
 
     try {
       const resposta = await window.diagpro.startScan({
         scanId: scanAtual.id,
-        serial: dispositivo.serial,
+        serial: serialSolicitado,
         mode: modo,
         modules: modo === 'custom' ? modulos : undefined,
       })
       if (scanAtivoRef.current !== scanAtual || !scanAtual.valido) return
 
       if (!resposta?.ok) {
-        setErro(resposta?.message || 'Não foi possível concluir a análise.')
+        const failure = scanFailureState(resposta)
+        setErro(failure.status === 'failed' ? failure.message : '')
+        setCancelado(failure.status === 'canceled')
+        setInterrompido(failure.status === 'device_disconnected' ? failure.message : '')
+        setCancelamentoSolicitado(false)
+        setProgresso((atual) => ({
+          ...atual,
+          progress: atual?.progress ?? 0,
+          label: failure.status === 'canceled' ? 'Análise cancelada' : failure.status === 'device_disconnected' ? 'Análise interrompida' : 'Falha na análise',
+        }))
+        onScanSessionChange?.((current) => updateMatchingScanSession(current, scanAtual.id, {
+          status: failure.status,
+          result: null,
+          persistence: { status: 'idle', id: null },
+          message: failure.message,
+        }))
         return
       }
+      const statusFinal = resposta.data?.status
+      if (!['completed', 'partial'].includes(statusFinal)) {
+        const failure = scanFailureState({ status: statusFinal, message: 'O Scanner retornou um resultado sem estado de conclusão válido.' })
+        setErro(failure.message)
+        setProgresso((atual) => ({ ...atual, progress: atual?.progress ?? 0, label: 'Falha na análise' }))
+        onScanSessionChange?.((current) => updateMatchingScanSession(current, scanAtual.id, {
+          status: 'failed', result: null, persistence: { status: 'idle', id: null }, message: failure.message,
+        }))
+        return
+      }
+      resultadoSerialRef.current = scanAtual.serial
       setResultado(resposta.data)
       setEtapas((atuais) => {
         const finais = Object.entries(resposta.data?.stages || {})
@@ -577,8 +687,17 @@ function ScannerPage({ accessToken, onNavigate }) {
           return acumuladas.map((item, index) => (index === indiceExistente ? { ...item, ...etapaFinal } : item))
         }, atuais)
       })
-      setProgresso({ progress: 100, label: 'Análise concluída' })
+      const progressoFinal = { progress: 100, label: statusFinal === 'partial' ? 'Análise concluída com avisos' : 'Análise concluída' }
+      setProgresso(progressoFinal)
       setPersistencia({ status: 'saving', id: null })
+      setCancelamentoSolicitado(false)
+      onScanSessionChange?.((current) => updateMatchingScanSession(current, scanAtual.id, {
+        status: statusFinal,
+        progress: progressoFinal,
+        result: resposta.data,
+        persistence: { status: 'saving', id: null },
+        message: statusFinal === 'partial' ? 'Análise concluída com avisos de coleta.' : '',
+      }))
       const promisePersistencia = salvarDiagnostico(resposta.data, {
         serial: scanAtual.serial,
         accessToken,
@@ -595,9 +714,15 @@ function ScannerPage({ accessToken, onNavigate }) {
         bindingPersistencia.id = diagnostico.id
         bindingPersistencia.data = diagnostico
         setPersistencia({ status: 'saved', id: diagnostico.id })
+        onScanSessionChange?.((current) => updateMatchingScanSession(current, scanAtual.id, {
+          persistence: { status: 'saved', id: diagnostico.id },
+        }))
       }).catch((error) => {
         if (persistenciaDiagnosticoRef.current !== bindingPersistencia) return
         setPersistencia({ status: 'error', id: null })
+        onScanSessionChange?.((current) => updateMatchingScanSession(current, scanAtual.id, {
+          persistence: { status: 'error', id: null },
+        }))
         if (error?.status === 403 && error?.details?.code) {
           setLicenca({
             status: 'blocked',
@@ -606,13 +731,52 @@ function ScannerPage({ accessToken, onNavigate }) {
           })
         }
       })
-    } catch {
+    } catch (error) {
       if (scanAtivoRef.current !== scanAtual || !scanAtual.valido) return
-      setErro('Erro ao comunicar com o dispositivo. Verifique a conexão e tente novamente.')
+      const failure = scanFailureState({ code: error?.code, message: error?.message || 'Erro ao comunicar com o dispositivo. Verifique a conexão e tente novamente.' })
+      setErro(failure.message)
+      setCancelamentoSolicitado(false)
+      onScanSessionChange?.((current) => updateMatchingScanSession(current, scanAtual.id, {
+        status: failure.status,
+        result: null,
+        persistence: { status: 'idle', id: null },
+        message: failure.message,
+      }))
     } finally {
       if (scanAtivoRef.current === scanAtual && scanAtual.valido) {
         scanAtivoRef.current = null
         setCarregando(false)
+      }
+    }
+  }
+
+  async function cancelarDiagnostico() {
+    const scanAtivo = scanAtivoRef.current
+    if (!scanAtivo?.valido || cancelamentoSolicitado || typeof window.diagpro?.cancelScan !== 'function') return
+    setCancelamentoSolicitado(true)
+    setProgresso((atual) => ({ ...atual, progress: atual?.progress ?? 0, label: 'Solicitando cancelamento...' }))
+    onScanSessionChange?.((current) => updateMatchingScanSession(current, scanAtivo.id, {
+      status: 'cancel_requested',
+      message: 'Cancelamento solicitado...',
+    }))
+    try {
+      const resposta = await window.diagpro.cancelScan(scanAtivo.id)
+      if (!resposta?.ok && scanAtivoRef.current === scanAtivo && scanAtivo.valido) {
+        setCancelamentoSolicitado(false)
+        setErro(resposta?.message || 'Não foi possível solicitar o cancelamento da análise.')
+        onScanSessionChange?.((current) => updateMatchingScanSession(current, scanAtivo.id, {
+          status: 'running',
+          message: '',
+        }))
+      }
+    } catch (error) {
+      if (scanAtivoRef.current === scanAtivo && scanAtivo.valido) {
+        setCancelamentoSolicitado(false)
+        setErro(error?.message || 'Não foi possível solicitar o cancelamento da análise.')
+        onScanSessionChange?.((current) => updateMatchingScanSession(current, scanAtivo.id, {
+          status: 'running',
+          message: '',
+        }))
       }
     }
   }
@@ -660,10 +824,17 @@ function ScannerPage({ accessToken, onNavigate }) {
           {(licenca.status === 'error' || licenca.status === 'auth-error') && <div className="scanner-license-state error"><AlertTriangle size={18} /><div><strong>Não foi possível verificar a licença</strong><span>{licenca.message}</span></div><button type="button" onClick={verificarLicenca}><RotateCcw size={14} /> Tentar novamente</button></div>}
           {licenca.status === 'allowed' && licenca.capability?.limit !== null && <div className="scanner-license-usage"><ShieldCheck size={15} /><span>Licença liberada: {licenca.capability.usage} de {licenca.capability.limit} diagnósticos utilizados neste mês.</span></div>}
 
-          <button className="scanner-start" onClick={iniciarDiagnostico} disabled={!podeIniciar}>
-            {carregando || licenca.status === 'checking' ? <Loader2 size={19} className="spin" /> : <Play size={19} fill="currentColor" />}
-            {carregando ? 'Analisando dispositivo...' : licenca.status === 'checking' ? 'Verificando licença...' : 'Iniciar análise'}
-          </button>
+          {carregando ? (
+            <button className="scanner-cancel" type="button" onClick={cancelarDiagnostico} disabled={cancelamentoSolicitado}>
+              {cancelamentoSolicitado ? <Loader2 size={18} className="spin" /> : <X size={18} />}
+              {cancelamentoSolicitado ? 'Cancelamento solicitado...' : 'Cancelar análise'}
+            </button>
+          ) : (
+            <button className="scanner-start" onClick={iniciarDiagnostico} disabled={!podeIniciar}>
+              {licenca.status === 'checking' ? <Loader2 size={19} className="spin" /> : <Play size={19} fill="currentColor" />}
+              {licenca.status === 'checking' ? 'Verificando licença...' : 'Iniciar análise'}
+            </button>
+          )}
         </section>
 
         <section className="scanner-card scanner-progress-card">
@@ -676,7 +847,8 @@ function ScannerPage({ accessToken, onNavigate }) {
             </div>
           )}
           {erro && <div className="scanner-error"><AlertTriangle size={18} /><span>{erro}</span></div>}
-          {interrompido && <div className="scanner-error"><AlertTriangle size={18} /><span>{MENSAGEM_INTERRUPCAO}</span></div>}
+          {interrompido && <div className="scanner-error"><AlertTriangle size={18} /><span>{interrompido}</span></div>}
+          {cancelado && <div className="scanner-canceled"><AlertTriangle size={18} /><span>A análise foi cancelada. Nenhum diagnóstico foi salvo.</span></div>}
           {etapas.length > 0 && (
             <div className="scanner-stages">
               {etapas.map((etapa) => (

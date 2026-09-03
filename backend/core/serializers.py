@@ -552,6 +552,12 @@ class DiagnosticoSerializer(serializers.ModelSerializer):
     def validate_resultado_tecnico(self, value):
         if not isinstance(value, dict) or not value:
             raise serializers.ValidationError('O resultado técnico completo é obrigatório.')
+        scan_status = value.get('status')
+        legacy_completed_result = scan_status is None and bool(value.get('finishedAt'))
+        if scan_status not in {'completed', 'partial'} and not legacy_completed_result:
+            raise serializers.ValidationError(
+                'Somente resultados concluídos ou concluídos parcialmente podem ser persistidos.'
+            )
         self._security_projection = validate_security_snapshot(value)
         return value
 

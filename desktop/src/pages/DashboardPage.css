@@ -790,6 +790,16 @@
   flex-direction: column;
   min-height: clamp(240px, 26vh, 280px);
 }
+
+.quick-action:disabled {
+  cursor: not-allowed;
+  opacity: .45;
+  filter: grayscale(.35);
+}
+
+.quick-action:disabled:hover {
+  transform: none;
+}
 .threats-panel .remove-all-button {
   margin-top: auto;
 }

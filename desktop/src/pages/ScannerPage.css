@@ -12,7 +12,7 @@
 .scanner-mode strong { color: #e5edf6; font-size: 13px; }
 .scanner-mode small { font-size: 11px; }
 .scanner-mode.selected { border-color: #168be5; background: #102b43; color: #35aaff; box-shadow: inset 3px 0 #168be5; }
-.scanner-mode:disabled, .scanner-start:disabled { cursor: not-allowed; opacity: .55; }
+.scanner-mode:disabled, .scanner-start:disabled, .scanner-cancel:disabled { cursor: not-allowed; opacity: .55; }
 .scanner-modules { margin-top: 14px; padding-top: 14px; border-top: 1px solid #1d2b3d; }
 .scanner-modules h3 { margin: 0 0 9px; font-size: 12px; }
 .scanner-module-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 7px; }
@@ -33,6 +33,7 @@
 .scanner-license-state button:hover { border-color: #3b82f6; background: #172554; }
 .scanner-license-usage { display: flex; align-items: center; gap: 7px; margin-top: 12px; border: 1px solid #14532d; border-radius: 7px; padding: 8px 9px; background: #08261f; color: #6ee7b7; font-size: 9px; }
 .scanner-start { width: 100%; min-height: 44px; margin-top: 14px; display: flex; align-items: center; justify-content: center; gap: 8px; border: 0; border-radius: 7px; background: linear-gradient(90deg, #087ee0, #18a4f8); color: white; font-weight: 800; cursor: pointer; }
+.scanner-cancel { width: 100%; min-height: 44px; margin-top: 14px; display: flex; align-items: center; justify-content: center; gap: 8px; border: 1px solid #8a3941; border-radius: 7px; background: #351a20; color: #ff9aa2; font-weight: 800; cursor: pointer; }
 .scanner-progress-card { min-height: 270px; }
 .scanner-empty { min-height: 178px; display: grid; place-content: center; justify-items: center; gap: 10px; color: #41556d; }
 .scanner-empty p { margin: 0; color: #718096; font-size: 12px; }
@@ -41,6 +42,7 @@
 .scanner-progress-track { height: 8px; margin-top: 8px; overflow: hidden; border-radius: 99px; background: #203044; }
 .scanner-progress-track span { display: block; height: 100%; border-radius: inherit; background: linear-gradient(90deg, #087ee0, #29b4ff); transition: width .2s ease; }
 .scanner-error { display: flex; gap: 8px; margin-top: 12px; padding: 10px; border: 1px solid #71333a; border-radius: 6px; background: #2b171d; color: #ff8993; font-size: 11px; }
+.scanner-canceled { display: flex; gap: 8px; margin-top: 12px; padding: 10px; border: 1px solid #675526; border-radius: 6px; background: #292314; color: #f0c96b; font-size: 11px; }
 .scanner-stages { display: grid; gap: 3px; margin-top: 14px; }
 .scanner-stages div { min-height: 29px; display: grid; grid-template-columns: 18px 1fr auto; align-items: center; gap: 7px; color: #4ed08a; font-size: 11px; }
 .scanner-stages span { color: #aebaca; }

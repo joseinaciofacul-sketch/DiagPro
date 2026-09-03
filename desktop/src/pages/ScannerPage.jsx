@@ -530,8 +530,8 @@ function ScannerPage({ accessToken, onNavigate }) {
 
     const scanSequence = proximoScanIdRef.current + 1
     const scanId = typeof window.diagpro.createScanId === 'function'
-      ? window.diagpro.createScanId()
-      : `scan-${Date.now()}-${scanSequence}`
+      ? await window.diagpro.createScanId()
+      : globalThis.crypto.randomUUID()
     const scanAtual = {
       id: scanId,
       serial: dispositivo.serial,

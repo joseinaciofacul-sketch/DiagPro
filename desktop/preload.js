@@ -1,5 +1,4 @@
 const { contextBridge, ipcRenderer } = require('electron')
-const crypto = require('crypto')
 
 function assinar(canal, callback) {
   if (typeof callback !== 'function') {
@@ -15,7 +14,7 @@ contextBridge.exposeInMainWorld('diagpro', {
   checkAdb: () => ipcRenderer.invoke('check-adb'),
   onDeviceStatus: (callback) => assinar('device-status-changed', callback),
   runDiagnostic: (serial) => ipcRenderer.invoke('run-diagnostic', { serial }),
-  createScanId: () => crypto.randomUUID(),
+  createScanId: () => ipcRenderer.invoke('create-scan-id'),
   startScan: ({ serial, mode, modules, scanId }) => ipcRenderer.invoke('start-scan', { serial, mode, modules, scanId }),
   cancelScan: (scanId) => ipcRenderer.invoke('cancel-scan', { scanId }),
   onScanProgress: (callback) => assinar('scan-progress', callback),

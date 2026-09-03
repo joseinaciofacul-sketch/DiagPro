@@ -43,7 +43,16 @@ test('parsers de métricas toleram campos ausentes', () => {
   assert.equal(parseBattery('garbage').level, null)
   assert.equal(parseStorage('/dev/block/data 1000000 400000 600000 40% /data').usagePercent, 40)
   assert.equal(parseStorage('Filesystem unknown').totalGb, null)
-  assert.equal(parseMemory('MemTotal: 8000000 kB\nMemFree: 2000000 kB').availableGb, 1.9)
+  assert.equal(parseMemory('MemTotal: 8000000 kB\nMemFree: 2000000 kB').availableGb, 2)
+})
+
+test('parser converte blocos reais anonimizados para GB decimais exibidos na interface', () => {
+  assert.deepEqual(parseStorage(fixture('storage-df-android.txt')), {
+    totalGb: 113.1,
+    usedGb: 69.7,
+    freeGb: 43.2,
+    usagePercent: 62,
+  })
 })
 
 test('parser getprop ignora linhas desconhecidas e preserva propriedades válidas', () => {

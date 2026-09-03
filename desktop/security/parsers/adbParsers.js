@@ -4,7 +4,7 @@ function integer(value) {
 }
 
 function toGb(kilobytes) {
-  return Number.isFinite(kilobytes) ? Math.round((kilobytes / 1024 / 1024) * 10) / 10 : null
+  return Number.isFinite(kilobytes) ? Math.round(((kilobytes * 1024) / 1_000_000_000) * 10) / 10 : null
 }
 
 function parseAdbDevices(output = '') {

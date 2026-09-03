@@ -101,6 +101,8 @@ async function monitorarDispositivo() {
 
 ipcMain.handle('get-device-status', () => monitorarDispositivo())
 
+ipcMain.handle('create-scan-id', () => crypto.randomUUID())
+
 ipcMain.handle('check-adb', async () => {
   try {
     const [adb, device] = await Promise.all([verificarAdb(), monitorarDispositivo()])

@@ -1,4 +1,5 @@
 const { contextBridge, ipcRenderer } = require('electron')
+const installedAppsRequests = new Map()
 
 function assinar(canal, callback) {
   if (typeof callback !== 'function') {
@@ -7,6 +8,20 @@ function assinar(canal, callback) {
   const listener = (_event, payload) => callback(payload)
   ipcRenderer.on(canal, listener)
   return () => ipcRenderer.removeListener(canal, listener)
+}
+
+function getInstalledApps({ serial } = {}) {
+  const key = String(serial || '')
+  const pending = installedAppsRequests.get(key)
+  if (pending) return pending
+
+  const request = ipcRenderer.invoke('get-installed-apps', { serial })
+  installedAppsRequests.set(key, request)
+  const release = () => {
+    if (installedAppsRequests.get(key) === request) installedAppsRequests.delete(key)
+  }
+  request.then(release, release)
+  return request
 }
 
 contextBridge.exposeInMainWorld('diagpro', {
@@ -19,7 +34,7 @@ contextBridge.exposeInMainWorld('diagpro', {
   cancelScan: (scanId) => ipcRenderer.invoke('cancel-scan', { scanId }),
   onScanProgress: (callback) => assinar('scan-progress', callback),
   onRemediationProgress: (callback) => assinar('remediation-progress', callback),
-  getInstalledApps: ({ serial }) => ipcRenderer.invoke('get-installed-apps', { serial }),
+  getInstalledApps,
   getRemovalPreview: ({ serial, packageName, finding, action, projectionId }) => ipcRenderer.invoke(
     'get-removal-preview',
     { serial, packageName, finding, action, projectionId },

@@ -6,5 +6,19 @@
 .dp-device-state-title { color: #e2e8f0; font-size: 16px; font-weight: 600; margin: 0 0 6px; }
 .dp-device-state-desc { font-size: 13px; max-width: 380px; margin: 0 auto; line-height: 1.5; }
 .dp-device-state-pulse { display: flex; align-items: center; justify-content: center; gap: 6px; margin-top: 14px; font-size: 12px; color: #f59e0b; }
+.dp-device-body { display: grid; grid-template-columns: 82px minmax(220px, 1fr) minmax(300px, .85fr); align-items: center; gap: 22px; padding: 12px 0; }
+.dp-device-visual { width: 78px; height: 92px; display: grid; place-items: center; border: 1px solid #245b91; border-radius: 14px; color: #69b5ff; background: linear-gradient(145deg, #173257, #0b1a2b); }
+.dp-device-visual svg { width: 46px; height: 58px; }
+.dp-device-info { min-width: 0; }
+.dp-device-info h2 { margin: 0 0 12px; color: #eef6ff; font-size: 22px; }
+.dp-device-tags { display: flex; flex-wrap: wrap; gap: 9px 16px; margin-top: 7px; color: #9db4cc; font-size: 12px; }
+.dp-device-tags span { display: inline-flex; align-items: center; gap: 5px; }
+.dp-device-quickinfo { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); overflow: hidden; border: 1px solid #293c52; border-radius: 9px; background: #0b1523; }
+.dp-quickinfo-title { grid-column: 1 / -1; padding: 9px 12px; border-bottom: 1px solid #293c52; color: #6f8dad; font-size: 10px; font-weight: 700; letter-spacing: .5px; }
+.dp-device-quickinfo > div:not(.dp-quickinfo-title) { min-width: 0; padding: 10px 12px; display: flex; flex-direction: column; gap: 3px; border-right: 1px solid #293c52; }
+.dp-device-quickinfo > div:last-child { border-right: 0; }
+.dp-device-quickinfo span { color: #6f8298; font-size: 9px; }
+.dp-device-quickinfo strong { overflow: hidden; color: #dce9f6; font-size: 11px; text-overflow: ellipsis; white-space: nowrap; }
 .spin { animation: dp-spin 1s linear infinite; }
 @keyframes dp-spin { from { transform: rotate(0deg); } to { transform: rotate(360deg); } }
+@media (max-width: 1050px) { .dp-device-body { grid-template-columns: 72px 1fr; }.dp-device-quickinfo { grid-column: 1 / -1; } }

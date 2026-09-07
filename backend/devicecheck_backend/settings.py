@@ -13,21 +13,31 @@ https://docs.djangoproject.com/en/6.1/ref/settings/
 from pathlib import Path
 import os
 from dotenv import load_dotenv
-
-load_dotenv()
+from django.core.exceptions import ImproperlyConfigured
+import dj_database_url
 
 # Build paths inside the project like this: BASE_DIR / 'subdir'.
 BASE_DIR = Path(__file__).resolve().parent.parent
+load_dotenv(BASE_DIR / '.env', override=False)
 
 
 # Quick-start development settings - unsuitable for production
 # See https://docs.djangoproject.com/en/6.1/howto/deployment/checklist/
 
 # SECURITY WARNING: keep the secret key used in production secret!
-SECRET_KEY = os.environ.get('SECRET_KEY')
+SECRET_KEY = os.environ.get('DJANGO_SECRET_KEY') or os.environ.get('SECRET_KEY', '')
+if not SECRET_KEY.strip():
+    raise ImproperlyConfigured('Configure DJANGO_SECRET_KEY no ambiente do servidor.')
 
 # SECURITY WARNING: don't run with debug turned on in production!
-DEBUG = os.environ.get('DJANGO_DEBUG', 'true').lower() in {'1', 'true', 'yes'}
+def env_bool(name, default=False):
+    value = os.environ.get(name, str(default)).strip().lower()
+    if value not in {'1', 'true', 'yes', '0', 'false', 'no'}:
+        raise ImproperlyConfigured(f'{name} deve ser true ou false.')
+    return value in {'1', 'true', 'yes'}
+
+
+DEBUG = env_bool('DJANGO_DEBUG')
 
 
 def env_list(name, default=''):
@@ -37,6 +47,8 @@ def env_list(name, default=''):
 # Informe somente hostnames, sem protocolo ou caminho. Em desenvolvimento, inclua
 # aqui via ambiente o hostname HTTPS atribuído pelo ngrok.
 ALLOWED_HOSTS = env_list('DJANGO_ALLOWED_HOSTS', '127.0.0.1,localhost')
+if not DEBUG and (not ALLOWED_HOSTS or '*' in ALLOWED_HOSTS):
+    raise ImproperlyConfigured('Configure DJANGO_ALLOWED_HOSTS sem wildcard em produção.')
 
 
 # Application definition
@@ -56,6 +68,8 @@ INSTALLED_APPS = [
 MIDDLEWARE = [
     'corsheaders.middleware.CorsMiddleware',
     'django.middleware.security.SecurityMiddleware',
+    'whitenoise.middleware.WhiteNoiseMiddleware',
+    'devicecheck_backend.observability.OperationalEventsMiddleware',
     'django.contrib.sessions.middleware.SessionMiddleware',
     'django.middleware.common.CommonMiddleware',
     'django.middleware.csrf.CsrfViewMiddleware',
@@ -98,6 +112,24 @@ DATABASES = {
         'OPTIONS': {'client_encoding': 'UTF8'},
     }
 }
+if os.environ.get('DATABASE_URL'):
+    try:
+        DATABASES['default'] = dj_database_url.parse(os.environ['DATABASE_URL'])
+    except (ValueError, KeyError, TypeError):
+        # Erros do parser podem incluir a URL com senha; não propagar seu texto.
+        raise ImproperlyConfigured('DATABASE_URL inválida; configure uma URL PostgreSQL.') from None
+    if DATABASES['default']['ENGINE'] != 'django.db.backends.postgresql':
+        raise ImproperlyConfigured('DATABASE_URL deve usar PostgreSQL.')
+
+_database = DATABASES['default']
+_database['CONN_MAX_AGE'] = int(os.environ.get('DB_CONN_MAX_AGE', '0'))
+_database['CONN_HEALTH_CHECKS'] = True
+_database.setdefault('OPTIONS', {}).setdefault('client_encoding', 'UTF8')
+_database['OPTIONS'].setdefault('connect_timeout', int(os.environ.get('DB_CONNECT_TIMEOUT', '5')))
+if os.environ.get('DB_SSLMODE'):
+    _database['OPTIONS']['sslmode'] = os.environ['DB_SSLMODE']
+if os.environ.get('DB_SSLROOTCERT'):
+    _database['OPTIONS']['sslrootcert'] = os.environ['DB_SSLROOTCERT']
 
 
 # Password validation
@@ -134,24 +166,34 @@ USE_TZ = True
 # Static files (CSS, JavaScript, Images)
 # https://docs.djangoproject.com/en/6.1/howto/static-files/
 
-STATIC_URL = 'static/'
-STATIC_ROOT = BASE_DIR / 'staticfiles'
+STATIC_URL = '/static/'
+STATIC_ROOT = Path(os.environ.get('DJANGO_STATIC_ROOT') or BASE_DIR / 'staticfiles')
+STORAGES = {
+    'default': {'BACKEND': 'django.core.files.storage.FileSystemStorage'},
+    'staticfiles': {'BACKEND': 'whitenoise.storage.CompressedManifestStaticFilesStorage'},
+}
+# Uploads não são servidos por WhiteNoise nem por uma rota pública de desenvolvimento.
+MEDIA_ROOT = Path(os.environ.get('DJANGO_MEDIA_ROOT') or BASE_DIR / 'media')
+MEDIA_URL = '/media/'
 
 # Ative HTTPS no servidor/proxy de produção; não aplicar ao runserver local.
 SESSION_COOKIE_SECURE = not DEBUG
 CSRF_COOKIE_SECURE = not DEBUG
-SECURE_SSL_REDIRECT = os.environ.get('DJANGO_SECURE_SSL_REDIRECT', 'false').lower() in {'1', 'true', 'yes'}
+SECURE_SSL_REDIRECT = env_bool('DJANGO_SECURE_SSL_REDIRECT')
 SECURE_HSTS_SECONDS = int(os.environ.get('DJANGO_SECURE_HSTS_SECONDS', '0'))
+SECURE_HSTS_INCLUDE_SUBDOMAINS = env_bool('DJANGO_SECURE_HSTS_INCLUDE_SUBDOMAINS')
+SECURE_HSTS_PRELOAD = env_bool('DJANGO_SECURE_HSTS_PRELOAD')
 CSRF_TRUSTED_ORIGINS = env_list('DJANGO_CSRF_TRUSTED_ORIGINS')
 # Somente atrás de um proxy confiável que sobrescreve o header recebido do cliente.
-if os.environ.get('DJANGO_TRUST_PROXY_SSL_HEADER', 'false').lower() in {'1', 'true', 'yes'}:
+if env_bool('DJANGO_TRUST_PROXY_SSL_HEADER'):
     SECURE_PROXY_SSL_HEADER = ('HTTP_X_FORWARDED_PROTO', 'https')
 
 
 # Email
 # https://docs.djangoproject.com/en/6.1/topics/email/#topic-email-configuration
 
-EMAIL_BACKEND = 'django.core.mail.backends.console.EmailBackend'
+EMAIL_BACKEND = ('django.core.mail.backends.console.EmailBackend' if DEBUG
+                 else 'django.core.mail.backends.dummy.EmailBackend')
 
 REST_FRAMEWORK = {
     'DEFAULT_AUTHENTICATION_CLASSES': (
@@ -167,6 +209,27 @@ SIMPLE_JWT = {
 }
 _development_cors_origins = 'http://localhost:5173,http://127.0.0.1:5173,null,file://' if DEBUG else ''
 CORS_ALLOWED_ORIGINS = env_list('DJANGO_CORS_ALLOWED_ORIGINS', _development_cors_origins)
+CORS_ALLOW_ALL_ORIGINS = False
+CORS_ALLOW_CREDENTIALS = False
+CORS_URLS_REGEX = r'^/api/.*$'
+
+DIAGPRO_HEALTHCHECK_DATABASE = env_bool('DJANGO_HEALTHCHECK_DATABASE', True)
+_log_level = os.environ.get('DJANGO_LOG_LEVEL', 'INFO').upper()
+if _log_level not in {'DEBUG', 'INFO', 'WARNING', 'ERROR', 'CRITICAL'}:
+    raise ImproperlyConfigured('DJANGO_LOG_LEVEL inválido.')
+LOGGING = {
+    'version': 1,
+    'disable_existing_loggers': False,
+    'formatters': {'safe': {'()': 'devicecheck_backend.observability.SafeJsonFormatter'}},
+    'handlers': {'console': {
+        'class': 'logging.StreamHandler', 'stream': 'ext://sys.stdout', 'formatter': 'safe',
+    }},
+    'root': {'handlers': ['console'], 'level': _log_level},
+    'loggers': {
+        name: {'handlers': ['console'], 'level': _log_level, 'propagate': False}
+        for name in ('django', 'django.server', 'diagpro', 'waitress')
+    },
+}
 
 # Mercado Pago: credenciais e URLs existem somente no backend.
 MERCADO_PAGO_ACCESS_TOKEN = os.environ.get('MERCADO_PAGO_ACCESS_TOKEN', '')

@@ -25,6 +25,7 @@ function getInstalledApps({ serial } = {}) {
 }
 
 contextBridge.exposeInMainWorld('diagpro', {
+  reportClientEvent: (payload) => ipcRenderer.invoke('client-event', { event: payload?.event }),
   getDeviceStatus: () => ipcRenderer.invoke('get-device-status'),
   checkAdb: () => ipcRenderer.invoke('check-adb'),
   onDeviceStatus: (callback) => assinar('device-status-changed', callback),

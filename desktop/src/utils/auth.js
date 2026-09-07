@@ -1,5 +1,18 @@
+import { apiUrl } from '../config/api.js'
+
 const ACCESS_KEY = 'diagpro_access_token'
 const REFRESH_KEY = 'diagpro_refresh_token'
+
+export async function fetchApi(url, options = {}) {
+  try {
+    const timeoutSignal = AbortSignal.timeout(15000)
+    const signal = options.signal ? AbortSignal.any([options.signal, timeoutSignal]) : timeoutSignal
+    return await fetch(url, { ...options, signal })
+  } catch (error) {
+    window.diagpro?.reportClientEvent?.({ event: 'api_unavailable' })?.catch(() => {})
+    throw error
+  }
+}
 
 export function salvarTokens(access, refresh) {
   localStorage.setItem(ACCESS_KEY, access)
@@ -25,7 +38,7 @@ export async function renovarSessao() {
   if (!refresh) return null
 
   try {
-    const resposta = await fetch('http://127.0.0.1:8000/api/token/refresh/', {
+    const resposta = await fetchApi(apiUrl('/api/token/refresh/'), {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ refresh }),
@@ -45,7 +58,7 @@ export async function renovarSessao() {
 }
 
 export async function fetchAutenticado(url, options = {}, accessToken = null) {
-  const executar = (token) => fetch(url, {
+  const executar = (token) => fetchApi(url, {
     ...options,
     headers: {
       ...options.headers,

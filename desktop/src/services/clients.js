@@ -1,6 +1,7 @@
 import { fetchAutenticado } from '../utils/auth.js'
+import { apiUrl } from '../config/api.js'
 
-const CLIENTS_URL = 'http://127.0.0.1:8000/api/clientes/'
+const CLIENTS_URL = apiUrl('/api/clientes/')
 
 async function parseResponse(response) {
   try {

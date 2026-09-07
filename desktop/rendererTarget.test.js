@@ -19,3 +19,14 @@ test('produção carrega o index gerado dentro de dist', () => {
   assert.equal(target.kind, 'file')
   assert.equal(target.value, path.join(__dirname, 'dist', 'index.html'))
 })
+
+test('modo local de produção usa o build sem depender do Vite', () => {
+  const target = rendererTarget({
+    packaged: false,
+    forceLocalBuild: true,
+    appDirectory: __dirname,
+    devServerUrl: 'http://127.0.0.1:5999',
+  })
+  assert.equal(target.kind, 'file')
+  assert.equal(target.value, path.join(__dirname, 'dist', 'index.html'))
+})

@@ -1,6 +1,7 @@
 const test = require('node:test')
 const assert = require('node:assert/strict')
-const { createAdbClient } = require('./adbClient')
+const path = require('path')
+const { createAdbClient, locateAdb } = require('./adbClient')
 const { ADB_ERROR_CODES, createAdbError } = require('./adbErrors')
 
 function clientWith(handler) {
@@ -79,4 +80,21 @@ test('cancelamento interrompe comando ADB pendente', async () => {
   const pending = client.runDevice('TEST-SERIAL', ['shell', 'dumpsys', 'package'], { signal: controller.signal })
   controller.abort(createAdbError(ADB_ERROR_CODES.SCAN_ABORTED))
   await assert.rejects(pending, (error) => error.code === ADB_ERROR_CODES.SCAN_ABORTED)
+})
+
+test('produção localiza primeiro o ADB distribuído nos recursos do aplicativo', () => {
+  const resourcesPath = path.join('C:', 'Program Files', 'DiagPro', 'resources')
+  const bundledAdb = path.join(resourcesPath, 'platform-tools', 'adb.exe')
+  const located = locateAdb({}, (candidate) => candidate === bundledAdb, resourcesPath)
+  assert.equal(located, bundledAdb)
+})
+
+test('caminho explícito do DiagPro prevalece sobre instalações detectadas', () => {
+  const configured = path.join('D:', 'Ferramentas', 'adb.exe')
+  const located = locateAdb(
+    { DIAGPRO_ADB_PATH: configured, ANDROID_HOME: path.join('C:', 'Android') },
+    () => true,
+    path.join('C:', 'Program Files', 'DiagPro', 'resources'),
+  )
+  assert.equal(located, configured)
 })

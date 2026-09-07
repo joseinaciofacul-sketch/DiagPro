@@ -1,6 +1,7 @@
 import { fetchAutenticado } from '../utils/auth.js'
+import { apiUrl } from '../config/api.js'
 
-const DIAGNOSTICS_URL = 'http://127.0.0.1:8000/api/diagnosticos/'
+const DIAGNOSTICS_URL = apiUrl('/api/diagnosticos/')
 
 function criarPayloadDiagnostico(resultado, serial) {
   const device = resultado?.device || resultado?.system || {}

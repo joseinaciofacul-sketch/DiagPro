@@ -36,7 +36,7 @@ function AppLayout({ username, onLogout, activePage, onNavigate, children }) {
     <div className="dp-layout">
       <aside className="dp-sidebar">
         <div className="dp-logo">
-          <img src="/logo.png" alt="DiagPro" className="dp-logo-icon" />
+          <img src="./logo.png" alt="DiagPro" className="dp-logo-icon" />
           <div>
             <div className="dp-logo-title">Diag<span>Pro</span></div>
             <div className="dp-logo-sub">Diagnóstico profissional de dispositivos</div>

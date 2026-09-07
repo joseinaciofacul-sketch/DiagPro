@@ -1,8 +1,9 @@
 import { fetchAutenticado } from '../utils/auth.js'
+import { apiUrl } from '../config/api.js'
 
-const SUBSCRIPTION_URL = 'http://127.0.0.1:8000/api/assinatura/'
-const CHECKOUT_URL = 'http://127.0.0.1:8000/api/assinatura/checkout/'
-const PLANS_URL = 'http://127.0.0.1:8000/api/planos/'
+const SUBSCRIPTION_URL = apiUrl('/api/assinatura/')
+const CHECKOUT_URL = apiUrl('/api/assinatura/checkout/')
+const PLANS_URL = apiUrl('/api/planos/')
 
 async function parseResponse(response) {
   try {

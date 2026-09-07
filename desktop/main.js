@@ -3,7 +3,9 @@ const crypto = require('crypto')
 const path = require('path')
 const { ADB_ERROR_CODES } = require('./adb/adbErrors')
 const { createScanCoordinator } = require('./adb/scanCoordinator')
+const { isTrustedRendererUrl } = require('./electronPolicy')
 const { isMercadoPagoCheckoutUrl } = require('./payments/checkout')
+const { createProductionLogger } = require('./productionLogger')
 const { rendererTarget } = require('./rendererTarget')
 const {
   verificarEstado,
@@ -20,7 +22,30 @@ let mainWindow
 let estadoAtual = { status: 'waiting' }
 let ultimoEstadoJSON = null
 let verificacaoAtual = null
+let rendererTargetInfo = null
+let productionLogger = null
 const scanCoordinator = createScanCoordinator()
+const forceLocalBuild = process.argv.includes('--local-build')
+
+function logOperationalError(event, details = {}) {
+  productionLogger?.error(event, details)
+}
+
+function trustedIpcHandler(channel, handler) {
+  ipcMain.handle(channel, async (event, ...args) => {
+    const senderUrl = event.senderFrame?.url || event.sender.getURL()
+    const trusted = mainWindow
+      && !mainWindow.isDestroyed()
+      && event.sender === mainWindow.webContents
+      && event.senderFrame === event.sender.mainFrame
+      && isTrustedRendererUrl(senderUrl, rendererTargetInfo)
+    if (!trusted) {
+      logOperationalError('ipc_rejected', { code: 'UNTRUSTED_RENDERER' })
+      throw new Error('Solicitação IPC não autorizada.')
+    }
+    return handler(event, ...args)
+  })
+}
 
 function validScanId(scanId) {
   return typeof scanId === 'string' && /^[A-Za-z0-9-]{8,80}$/.test(scanId)
@@ -50,30 +75,66 @@ function abortDisconnectedOperations(deviceState) {
 }
 
 function createWindow() {
+  rendererTargetInfo = rendererTarget({
+    packaged: app.isPackaged,
+    forceLocalBuild,
+    appDirectory: __dirname,
+    devServerUrl: process.env.DIAGPRO_RENDERER_URL,
+  })
+  const iconDirectory = rendererTargetInfo.kind === 'file' ? 'dist' : 'public'
+
   mainWindow = new BrowserWindow({
     width: 1440,
     height: 900,
     minWidth: 1100,
     minHeight: 700,
     autoHideMenuBar: true,
-    icon: path.join(__dirname, 'public/logo.png'),
+    icon: path.join(__dirname, iconDirectory, 'logo.png'),
     webPreferences: {
       preload: path.join(__dirname, 'preload.js'),
       contextIsolation: true,
       nodeIntegration: false,
+      sandbox: true,
+      devTools: rendererTargetInfo.kind === 'url',
     },
   })
 
   // Abre o DiagPro maximizado
   mainWindow.maximize()
 
-  const target = rendererTarget({
-    packaged: app.isPackaged,
-    appDirectory: __dirname,
-    devServerUrl: process.env.DIAGPRO_RENDERER_URL,
+  mainWindow.webContents.setWindowOpenHandler(() => ({ action: 'deny' }))
+  mainWindow.webContents.on('will-navigate', (event, navigationUrl) => {
+    if (!isTrustedRendererUrl(navigationUrl, rendererTargetInfo)) {
+      event.preventDefault()
+      logOperationalError('renderer_navigation_blocked', { code: 'UNTRUSTED_URL' })
+    }
   })
-  if (target.kind === 'file') mainWindow.loadFile(target.value)
-  else mainWindow.loadURL(target.value)
+
+  const permissionSession = mainWindow.webContents.session
+  permissionSession.setPermissionRequestHandler((_webContents, _permission, callback) => callback(false))
+  permissionSession.setPermissionCheckHandler(() => false)
+
+  let showingLoadFailure = false
+  mainWindow.webContents.on('did-fail-load', (_event, errorCode, _description, _url, isMainFrame) => {
+    if (!isMainFrame || showingLoadFailure) return
+    showingLoadFailure = true
+    logOperationalError('renderer_load_failed', { code: errorCode })
+    const errorPage = encodeURIComponent(`<!doctype html>
+      <html lang="pt-BR"><head><meta charset="UTF-8"><meta http-equiv="Content-Security-Policy" content="default-src 'none'; style-src 'unsafe-inline'">
+      <style>body{margin:0;display:grid;place-items:center;height:100vh;background:#080f1c;color:#dce9f6;font-family:Segoe UI,sans-serif}.box{max-width:520px;padding:32px;border:1px solid #29415e;border-radius:14px;background:#101c2c}h1{font-size:22px}p{color:#9db4cc;line-height:1.55}</style></head>
+      <body><main class="box"><h1>O DiagPro não pôde abrir a interface</h1><p>Feche e abra o aplicativo novamente. Se o problema continuar, consulte o arquivo de log do DiagPro.</p></main></body></html>`)
+    mainWindow.loadURL(`data:text/html;charset=UTF-8,${errorPage}`)
+  })
+  mainWindow.webContents.on('render-process-gone', (_event, details) => {
+    logOperationalError('renderer_process_gone', { reason: details.reason, exitCode: details.exitCode })
+  })
+  mainWindow.webContents.on('preload-error', () => logOperationalError('preload_failed', { code: 'PRELOAD_ERROR' }))
+
+  productionLogger?.info('renderer_loading', { targetKind: rendererTargetInfo.kind })
+  const loading = rendererTargetInfo.kind === 'file'
+    ? mainWindow.loadFile(rendererTargetInfo.value)
+    : mainWindow.loadURL(rendererTargetInfo.value)
+  loading.catch(() => logOperationalError('renderer_load_failed', { code: 'LOAD_REJECTED' }))
 
   mainWindow.on('closed', () => {
     mainWindow = null
@@ -106,11 +167,15 @@ async function monitorarDispositivo() {
   return verificacaoAtual
 }
 
-ipcMain.handle('get-device-status', () => monitorarDispositivo())
+trustedIpcHandler('get-device-status', () => monitorarDispositivo())
 
-ipcMain.handle('create-scan-id', () => crypto.randomUUID())
+trustedIpcHandler('create-scan-id', () => crypto.randomUUID())
 
-ipcMain.handle('check-adb', async () => {
+trustedIpcHandler('client-event', (_event, payload = {}) => {
+  if (payload?.event === 'api_unavailable') logOperationalError('api_unavailable', { code: 'NETWORK_ERROR' })
+})
+
+trustedIpcHandler('check-adb', async () => {
   try {
     const [adb, device] = await Promise.all([verificarAdb(), monitorarDispositivo()])
     return { ok: true, data: { adb, device } }
@@ -127,7 +192,7 @@ ipcMain.handle('check-adb', async () => {
   }
 })
 
-ipcMain.handle('run-diagnostic', async (_event, { serial } = {}) => {
+trustedIpcHandler('run-diagnostic', async (_event, { serial } = {}) => {
   const operationId = crypto.randomUUID()
   if (!acquireDeviceOperation(serial, 'scan', operationId)) return { sucesso: false, mensagem: deviceBusyResponse(serial).message }
   try {
@@ -140,7 +205,7 @@ ipcMain.handle('run-diagnostic', async (_event, { serial } = {}) => {
   }
 })
 
-ipcMain.handle('start-scan', async (_event, { serial, mode, modules, scanId: requestedScanId } = {}) => {
+trustedIpcHandler('start-scan', async (_event, { serial, mode, modules, scanId: requestedScanId } = {}) => {
   const scanId = validScanId(requestedScanId) ? requestedScanId : crypto.randomUUID()
   const controller = new AbortController()
   const started = scanCoordinator.beginScan({ scanId, serial, controller })
@@ -175,14 +240,14 @@ ipcMain.handle('start-scan', async (_event, { serial, mode, modules, scanId: req
   }
 })
 
-ipcMain.handle('cancel-scan', async (_event, { scanId } = {}) => {
+trustedIpcHandler('cancel-scan', async (_event, { scanId } = {}) => {
   const scan = scanCoordinator.getScan(scanId)
   if (!scan) return { ok: false, scanId, code: 'SCAN_NOT_FOUND', message: 'A análise não está mais em execução.' }
   scanCoordinator.cancelScan(scanId)
   return { ok: true, scanId, status: 'cancel_requested' }
 })
 
-ipcMain.handle('get-installed-apps', async (_event, { serial } = {}) => {
+trustedIpcHandler('get-installed-apps', async (_event, { serial } = {}) => {
   const operationId = crypto.randomUUID()
   if (!acquireDeviceOperation(serial, 'apps', operationId)) return deviceBusyResponse(serial)
   try {
@@ -194,7 +259,7 @@ ipcMain.handle('get-installed-apps', async (_event, { serial } = {}) => {
   }
 })
 
-ipcMain.handle('get-removal-preview', async (_event, {
+trustedIpcHandler('get-removal-preview', async (_event, {
   serial, packageName, finding, action, projectionId,
 } = {}) => {
   const operationId = crypto.randomUUID()
@@ -211,7 +276,7 @@ ipcMain.handle('get-removal-preview', async (_event, {
   }
 })
 
-ipcMain.handle('uninstall-user-app', async (_event, {
+trustedIpcHandler('uninstall-user-app', async (_event, {
   serial, packageName, androidUserId, confirmationToken, actionId, findingId, projectionId,
 } = {}) => {
   if (typeof actionId !== 'string' || !/^[0-9a-f]{8}-[0-9a-f-]{27}$/i.test(actionId)) {
@@ -244,7 +309,7 @@ ipcMain.handle('uninstall-user-app', async (_event, {
   }
 })
 
-ipcMain.handle('cancel-remediation', async (_event, { actionId, confirmationToken } = {}) => {
+trustedIpcHandler('cancel-remediation', async (_event, { actionId, confirmationToken } = {}) => {
   if (scanCoordinator.cancelOperation(actionId)) {
     return { ok: true, actionId, status: 'cancel_requested' }
   }
@@ -254,7 +319,7 @@ ipcMain.handle('cancel-remediation', async (_event, { actionId, confirmationToke
   return { ok: false, actionId, code: 'REMEDIATION_NOT_FOUND', message: 'A correção não está mais pendente.' }
 })
 
-ipcMain.handle('open-external-checkout', async (_event, { url } = {}) => {
+trustedIpcHandler('open-external-checkout', async (_event, { url } = {}) => {
   if (!isMercadoPagoCheckoutUrl(url)) {
     return { ok: false, code: 'INVALID_CHECKOUT_URL', message: 'O endereço de checkout não é permitido.' }
   }
@@ -267,9 +332,14 @@ ipcMain.handle('open-external-checkout', async (_event, { url } = {}) => {
 })
 
 app.whenReady().then(() => {
+  try {
+    productionLogger = createProductionLogger({ directory: path.join(app.getPath('userData'), 'logs') })
+    productionLogger.info('startup', { packaged: app.isPackaged, version: app.getVersion() })
+  } catch { /* A falha de logs não impede a inicialização. */ }
   createWindow()
-  monitorarDispositivo()
-  setInterval(monitorarDispositivo, 2000)
+  const poll = () => monitorarDispositivo().catch(() => logOperationalError('adb_unavailable', { code: 'ADB_UNAVAILABLE' }))
+  poll()
+  setInterval(poll, 2000)
 })
 
 app.on('window-all-closed', () => {

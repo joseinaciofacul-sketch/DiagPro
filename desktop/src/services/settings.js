@@ -1,8 +1,9 @@
 import { fetchAutenticado } from '../utils/auth.js'
+import { apiUrl } from '../config/api.js'
 
-const ME_URL = 'http://127.0.0.1:8000/api/me/'
-const PASSWORD_URL = 'http://127.0.0.1:8000/api/me/password/'
-const COMPANIES_URL = 'http://127.0.0.1:8000/api/empresas/'
+const ME_URL = apiUrl('/api/me/')
+const PASSWORD_URL = apiUrl('/api/me/password/')
+const COMPANIES_URL = apiUrl('/api/empresas/')
 
 async function parseResponse(response) {
   try {

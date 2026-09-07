@@ -3,8 +3,13 @@ const path = require('path')
 const DEFAULT_DEV_SERVER_URL = 'http://127.0.0.1:5173'
 const LOOPBACK_HOSTS = new Set(['127.0.0.1', 'localhost', '::1'])
 
-function rendererTarget({ packaged, appDirectory, devServerUrl = DEFAULT_DEV_SERVER_URL }) {
-  if (packaged) {
+function rendererTarget({
+  packaged,
+  appDirectory,
+  devServerUrl = DEFAULT_DEV_SERVER_URL,
+  forceLocalBuild = false,
+}) {
+  if (packaged || forceLocalBuild) {
     return { kind: 'file', value: path.join(appDirectory, 'dist', 'index.html') }
   }
 

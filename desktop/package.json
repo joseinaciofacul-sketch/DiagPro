@@ -1,14 +1,18 @@
 {
   "name": "desktop",
   "version": "1.0.0",
-  "description": "",
+  "description": "Diagnóstico técnico Android para assistências",
   "main": "main.js",
   "scripts": {
-    "test": "node --test preload.test.js rendererTarget.test.js src/utils/scanSession.test.mjs adb/adbClient.test.js adb/scanCoordinator.test.js security/parsers/parsers.test.js security/collectors/collectors.test.js security/securityAnalyzer.test.js security/ruleEngine.test.js security/falsePositive.test.js security/securityCoverage.test.js security/riskScorer.test.js remediation/remediation.test.js remediation/remediationService.test.js payments/checkout.test.js",
+    "test": "node --test preload.test.js rendererTarget.test.js src/utils/scanSession.test.mjs adb/adbClient.test.js adb/scanCoordinator.test.js security/parsers/parsers.test.js security/collectors/collectors.test.js security/securityAnalyzer.test.js security/ruleEngine.test.js security/falsePositive.test.js security/securityCoverage.test.js security/riskScorer.test.js remediation/remediation.test.js remediation/remediationService.test.js payments/checkout.test.js electronPolicy.test.js productionLogger.test.js src/config/apiBase.test.mjs",
     "dev": "vite",
     "electron": "electron .",
     "build": "vite build",
-    "preview": "vite preview"
+    "preview": "vite preview",
+    "electron:prod": "electron . --local-build",
+    "package": "npm run build && electron-builder --config electron-builder.cjs --dir --win --publish never",
+    "dist": "node scripts/check-release.mjs && npm run build && electron-builder --config electron-builder.cjs --win nsis --publish never",
+    "test:production": "electron scripts/smoke-production.cjs"
   },
   "keywords": [],
   "author": "",
@@ -17,6 +21,7 @@
   "devDependencies": {
     "@vitejs/plugin-react": "^6.0.5",
     "electron": "^43.4.0",
+    "electron-builder": "^26.15.3",
     "vite": "^8.2.1"
   },
   "dependencies": {

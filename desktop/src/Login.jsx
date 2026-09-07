@@ -1,5 +1,7 @@
 import { useState } from 'react'
 import { User, Lock, Eye, EyeOff, ArrowRight, ShieldCheck, LineChart, Zap, Headphones } from 'lucide-react'
+import { apiUrl } from './config/api.js'
+import { fetchApi } from './utils/auth.js'
 import './Login.css'
 
 const features = [
@@ -22,7 +24,7 @@ function Login({ onLoginSuccess }) {
     setCarregando(true)
 
     try {
-      const resposta = await fetch('http://127.0.0.1:8000/api/token/', {
+      const resposta = await fetchApi(apiUrl('/api/token/'), {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ username, password }),
@@ -35,7 +37,9 @@ function Login({ onLoginSuccess }) {
             const dados = await resposta.json()
       onLoginSuccess(dados.access, dados.refresh, username, remember)
     } catch (err) {
-      setErro(err.message)
+      setErro(['TypeError', 'TimeoutError'].includes(err?.name)
+        ? 'Não foi possível conectar à API do DiagPro.'
+        : err.message)
     } finally {
       setCarregando(false)
     }
@@ -45,7 +49,7 @@ function Login({ onLoginSuccess }) {
     <div className="dp-login-page">
       <div className="dp-login-left">
         <div className="dp-login-logo-row">
-          <img src="/logo.png" alt="DiagPro" />
+          <img src="./logo.png" alt="DiagPro" />
           <div className="dp-login-brand">Diag<span>Pro</span></div>
         </div>
 

@@ -37,6 +37,10 @@ def main():
         'DJANGO_SECURE_HSTS_SECONDS': '0',
         'DJANGO_CORS_ALLOWED_ORIGINS': 'null',
         'DJANGO_HEALTHCHECK_DATABASE': 'true',
+        # A simulação é um único processo loopback e não acessa Redis externo.
+        # Produção real mantém o padrão seguro e exige cache compartilhado.
+        'DJANGO_REQUIRE_SHARED_THROTTLE_CACHE': 'false',
+        'DJANGO_THROTTLE_CACHE_URL': '',
         'MERCADO_PAGO_ACCESS_TOKEN': '',
         'MERCADO_PAGO_WEBHOOK_SECRET': '',
     })

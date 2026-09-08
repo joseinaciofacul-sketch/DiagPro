@@ -10,6 +10,26 @@ from .models import (
 from .security_projection import build_finding_models, validate_security_snapshot
 
 
+SENSITIVE_API_KEYS = frozenset({'confirmationtoken', 'rawtoken', 'tokenhash', 'token'})
+
+
+def _normalized_key(key):
+    return ''.join(character for character in str(key).casefold() if character.isalnum())
+
+
+def redact_sensitive_api_values(value):
+    """Return an API-safe copy without confirmation secrets or internal hashes."""
+    if isinstance(value, dict):
+        return {
+            key: redact_sensitive_api_values(child)
+            for key, child in value.items()
+            if _normalized_key(key) not in SENSITIVE_API_KEYS
+        }
+    if isinstance(value, list):
+        return [redact_sensitive_api_values(item) for item in value]
+    return value
+
+
 class EmpresaSerializer(serializers.ModelSerializer):
     usuario = serializers.PrimaryKeyRelatedField(read_only=True)
 
@@ -104,6 +124,13 @@ class ClienteSerializer(serializers.ModelSerializer):
         extra_kwargs = {'nome': {'required': True, 'allow_blank': False}}
 
     def get_diagnosticos(self, cliente):
+        diagnosticos = getattr(cliente, 'owned_diagnosticos', None)
+        if diagnosticos is None:
+            diagnosticos = (
+                cliente.diagnosticos
+                .filter(usuario=cliente.usuario)
+                .prefetch_related('security_findings')
+            )
         return [
             {
                 'id': item.id,
@@ -121,26 +148,73 @@ class ClienteSerializer(serializers.ModelSerializer):
                 'security_risk_version': item.security_risk_version,
                 'security_findings_count': len(item.security_findings.all()),
             }
-            for item in cliente.diagnosticos.all()
+            for item in diagnosticos
         ]
 
 
 class DispositivoSerializer(serializers.ModelSerializer):
+    cliente = serializers.PrimaryKeyRelatedField(queryset=Cliente.objects.none())
+
     class Meta:
         model = Dispositivo
-        fields = '__all__'
+        fields = [
+            'id', 'cliente', 'tipo', 'fabricante', 'modelo', 'numero_serie',
+            'sistema_operacional', 'data_cadastro',
+        ]
+        read_only_fields = ['id', 'data_cadastro']
+
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        request = self.context.get('request')
+        if request and request.user.is_authenticated:
+            self.fields['cliente'].queryset = Cliente.objects.filter(usuario=request.user)
 
 
 class AnaliseSerializer(serializers.ModelSerializer):
+    dispositivo = serializers.PrimaryKeyRelatedField(queryset=Dispositivo.objects.none())
+    tecnico = serializers.PrimaryKeyRelatedField(read_only=True)
+
     class Meta:
         model = Analise
-        fields = '__all__'
+        fields = [
+            'id', 'dispositivo', 'tecnico', 'score_geral', 'score_seguranca',
+            'score_bateria', 'score_armazenamento', 'score_performance',
+            'score_sistema', 'dados_brutos', 'resumo_ia', 'data_analise',
+        ]
+        read_only_fields = ['id', 'tecnico', 'data_analise']
+
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        request = self.context.get('request')
+        if request and request.user.is_authenticated:
+            self.fields['dispositivo'].queryset = Dispositivo.objects.filter(
+                cliente__usuario=request.user,
+            )
 
 
 class RelatorioSerializer(serializers.ModelSerializer):
+    analise = serializers.PrimaryKeyRelatedField(queryset=Analise.objects.none())
+
     class Meta:
         model = Relatorio
-        fields = '__all__'
+        fields = ['id', 'analise', 'qr_code_token', 'arquivo_pdf', 'data_geracao']
+        read_only_fields = ['id', 'qr_code_token', 'arquivo_pdf', 'data_geracao']
+
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        request = self.context.get('request')
+        if request and request.user.is_authenticated:
+            self.fields['analise'].queryset = Analise.objects.filter(
+                dispositivo__cliente__usuario=request.user,
+            )
+
+    def validate_analise(self, value):
+        existing = Relatorio.objects.filter(analise=value)
+        if self.instance is not None:
+            existing = existing.exclude(pk=self.instance.pk)
+        if existing.exists():
+            raise serializers.ValidationError('Esta análise já possui relatório.')
+        return value
 
 
 class PlanoSerializer(serializers.ModelSerializer):
@@ -261,7 +335,7 @@ class RemediationAuditSerializer(serializers.Serializer):
     def _contains_raw_token(value):
         if isinstance(value, dict):
             for key, child in value.items():
-                if str(key).lower() in {'confirmationtoken', 'rawtoken', 'token'}:
+                if _normalized_key(key) in {'confirmationtoken', 'rawtoken', 'token'}:
                     return True
                 if RemediationAuditSerializer._contains_raw_token(child):
                     return True
@@ -459,7 +533,7 @@ class SecurityFindingDetailSerializer(SecurityFindingSummarySerializer):
         ]
         if not matches:
             return None
-        return matches[-1]
+        return redact_sensitive_api_values(matches[-1])
 
 
 class DiagnosticoSerializer(serializers.ModelSerializer):
@@ -552,6 +626,12 @@ class DiagnosticoSerializer(serializers.ModelSerializer):
     def validate_resultado_tecnico(self, value):
         if not isinstance(value, dict) or not value:
             raise serializers.ValidationError('O resultado técnico completo é obrigatório.')
+        if 'remediations' in value:
+            remediations = value['remediations']
+            if not isinstance(remediations, list) or remediations:
+                raise serializers.ValidationError(
+                    'Um diagnóstico novo não pode criar histórico de remediação.'
+                )
         scan_status = value.get('status')
         legacy_completed_result = scan_status is None and bool(value.get('finishedAt'))
         if scan_status not in {'completed', 'partial'} and not legacy_completed_result:
@@ -585,6 +665,9 @@ class DiagnosticoSerializer(serializers.ModelSerializer):
             or diagnostico.security_risk_status is not None
             or self.get_security_findings_count(diagnostico) > 0
         )
+
+    def to_representation(self, instance):
+        return redact_sensitive_api_values(super().to_representation(instance))
 
     def create(self, validated_data):
         projection = self.get_security_projection()

@@ -9,7 +9,7 @@ from rest_framework.exceptions import ValidationError
 from rest_framework.permissions import AllowAny
 from django.conf import settings
 from django.contrib.auth import get_user_model
-from django.db.models import Count, Max
+from django.db.models import Count, Max, Prefetch, Q
 from django.shortcuts import get_object_or_404
 from django.db import transaction
 from django.utils import timezone
@@ -35,7 +35,9 @@ from .serializers import (
     RemediationAuditSerializer,
     CurrentUserSerializer,
     ChangePasswordSerializer,
+    redact_sensitive_api_values,
 )
+from .throttling import WebhookIPRateThrottle
 from .payments import (
     InvalidWebhookSignature,
     PaymentConfigurationError,
@@ -46,6 +48,14 @@ from .payments import (
     validate_webhook_signature,
 )
 from .subscriptions import diagnostic_capability, get_user_subscription, subscription_usage
+
+
+def _immutable_scan_snapshot(technical_result):
+    """Exclude only the server-managed remediation audit from idempotency checks."""
+    snapshot = deepcopy(technical_result)
+    if isinstance(snapshot, dict):
+        snapshot.pop('remediations', None)
+    return snapshot
 
 
 class EmpresaViewSet(
@@ -74,6 +84,8 @@ class CurrentUserView(RetrieveUpdateAPIView):
 
 
 class ChangePasswordView(APIView):
+    throttle_scope = 'password'
+
     def post(self, request):
         serializer = ChangePasswordSerializer(data=request.data, context={'request': request})
         serializer.is_valid(raise_exception=True)
@@ -92,15 +104,32 @@ class ClienteViewSet(
     http_method_names = ['get', 'post', 'patch', 'head', 'options']
 
     def get_queryset(self):
+        owned_diagnostics = (
+            Diagnostico.objects
+            .filter(usuario=self.request.user)
+            .prefetch_related('security_findings')
+            .order_by('-finalizado_em', '-id')
+        )
         return (
             Cliente.objects
             .filter(usuario=self.request.user)
             .annotate(
-                diagnosticos_count=Count('diagnosticos', distinct=True),
+                diagnosticos_count=Count(
+                    'diagnosticos',
+                    filter=Q(diagnosticos__usuario=self.request.user),
+                    distinct=True,
+                ),
                 dispositivos_count=Count('dispositivos', distinct=True),
-                ultimo_atendimento=Max('diagnosticos__finalizado_em'),
+                ultimo_atendimento=Max(
+                    'diagnosticos__finalizado_em',
+                    filter=Q(diagnosticos__usuario=self.request.user),
+                ),
             )
-            .prefetch_related('diagnosticos__security_findings')
+            .prefetch_related(Prefetch(
+                'diagnosticos',
+                queryset=owned_diagnostics,
+                to_attr='owned_diagnosticos',
+            ))
             .order_by('nome', 'id')
         )
 
@@ -109,18 +138,42 @@ class ClienteViewSet(
 
 
 class DispositivoViewSet(ModelViewSet):
-    queryset = Dispositivo.objects.all()
     serializer_class = DispositivoSerializer
+
+    def get_queryset(self):
+        return (
+            Dispositivo.objects
+            .filter(cliente__usuario=self.request.user)
+            .select_related('cliente')
+            .order_by('id')
+        )
 
 
 class AnaliseViewSet(ModelViewSet):
-    queryset = Analise.objects.all()
     serializer_class = AnaliseSerializer
+
+    def get_queryset(self):
+        return (
+            Analise.objects
+            .filter(dispositivo__cliente__usuario=self.request.user)
+            .select_related('dispositivo', 'dispositivo__cliente', 'tecnico')
+            .order_by('id')
+        )
+
+    def perform_create(self, serializer):
+        serializer.save(tecnico=self.request.user)
 
 
 class RelatorioViewSet(ModelViewSet):
-    queryset = Relatorio.objects.all()
     serializer_class = RelatorioSerializer
+
+    def get_queryset(self):
+        return (
+            Relatorio.objects
+            .filter(analise__dispositivo__cliente__usuario=self.request.user)
+            .select_related('analise', 'analise__dispositivo', 'analise__dispositivo__cliente')
+            .order_by('id')
+        )
 
 
 class LicencaViewSet(viewsets.ReadOnlyModelViewSet):
@@ -168,6 +221,8 @@ class CurrentSubscriptionView(APIView):
 
 
 class SubscriptionCheckoutView(APIView):
+    throttle_scope = 'checkout'
+
     def post(self, request):
         serializer = CheckoutSerializer(data=request.data)
         serializer.is_valid(raise_exception=True)
@@ -224,12 +279,10 @@ class SubscriptionCheckoutView(APIView):
 class MercadoPagoWebhookView(APIView):
     authentication_classes = []
     permission_classes = [AllowAny]
+    throttle_classes = [WebhookIPRateThrottle]
 
     def post(self, request):
         notification_type = str(request.data.get('type') or request.query_params.get('type') or '').lower()
-        if notification_type and notification_type != 'payment':
-            return Response({'processed': False, 'code': 'notification_type_ignored'})
-
         data_id = request.query_params.get('data.id')
         try:
             validate_webhook_signature(
@@ -241,6 +294,9 @@ class MercadoPagoWebhookView(APIView):
             return Response({'code': error.code, 'message': error.message}, status=status.HTTP_401_UNAUTHORIZED)
         except PaymentConfigurationError as error:
             return Response({'code': error.code, 'message': error.message}, status=status.HTTP_503_SERVICE_UNAVAILABLE)
+
+        if notification_type and notification_type != 'payment':
+            return Response({'processed': False, 'code': 'notification_type_ignored'})
 
         try:
             payment, _license_record, activated = process_mercado_pago_webhook(
@@ -268,6 +324,13 @@ class DiagnosticoViewSet(
     viewsets.GenericViewSet,
 ):
     serializer_class = DiagnosticoSerializer
+
+    def get_throttle_scope(self, request):
+        if self.action == 'create':
+            return 'diagnostic'
+        if self.action == 'registrar_remediacao':
+            return 'remediation'
+        return None
 
     def get_queryset(self):
         queryset = (
@@ -316,7 +379,9 @@ class DiagnosticoViewSet(
         if scan_id is not None:
             existing = self.get_queryset().filter(scan_id=scan_id).first()
             if existing is not None:
-                if existing.resultado_tecnico != serializer.validated_data['resultado_tecnico']:
+                if _immutable_scan_snapshot(existing.resultado_tecnico) != _immutable_scan_snapshot(
+                    serializer.validated_data['resultado_tecnico'],
+                ):
                     raise ValidationError({
                         'resultado_tecnico': 'O scanId já pertence a outro snapshot deste usuário.',
                     })
@@ -354,7 +419,7 @@ class DiagnosticoViewSet(
                 raise ValidationError({'remediations': 'O histórico técnico existente é inválido.'})
             return Response({
                 'diagnosticId': diagnostico.id,
-                'remediations': remediations,
+                'remediations': redact_sensitive_api_values(remediations),
                 'remediationsCount': len(remediations),
             })
 
@@ -396,7 +461,7 @@ class DiagnosticoViewSet(
                     'created': False,
                     'duplicate': True,
                     'updated': False,
-                    'remediation': existing,
+                    'remediation': redact_sensitive_api_values(existing),
                     'remediationsCount': len(remediations),
                 })
 
@@ -410,7 +475,7 @@ class DiagnosticoViewSet(
                         'created': False,
                         'duplicate': True,
                         'updated': False,
-                        'remediation': existing,
+                        'remediation': redact_sensitive_api_values(existing),
                         'remediationsCount': len(remediations),
                     })
                 remediations[existing_index] = remediation
@@ -445,7 +510,7 @@ class DiagnosticoViewSet(
             'created': not updated,
             'duplicate': False,
             'updated': updated,
-            'remediation': remediation,
+            'remediation': redact_sensitive_api_values(remediation),
             'remediationsCount': len(remediations),
         }, status=status.HTTP_200_OK if updated else status.HTTP_201_CREATED)
 

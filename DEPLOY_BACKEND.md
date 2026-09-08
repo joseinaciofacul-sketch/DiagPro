@@ -1,13 +1,15 @@
-# DiagPro — ETAPA 11: preparação da API online
+# DiagPro — ETAPAS 11 e 12: preparação e segurança da API online
 
 ## Estado e limites
 
-Checkpoint inicial: `main`, `12f65c8`, igual a `origin/main`, working tree limpo.
+Checkpoint inicial da ETAPA 12: `main`, `0c190de`, igual a `origin/main`,
+working tree limpo.
 Nenhum deploy, conta cloud, compra, credencial, migration de modelo, scan físico,
 pagamento real, commit ou push nesta etapa. Desktop/Scanner/ADB não foram alterados.
 
-**Não liberar a API publicamente ainda.** A preparação operacional não resolve os
-bloqueios de isolamento e limitação de abuso listados abaixo.
+O código da API agora possui isolamento por proprietário e throttling. A exposição
+pública continua condicionada à configuração operacional de Redis, proxy/TLS,
+backup e proteção de borda descrita neste documento.
 
 ## Arquitetura e hospedagem recomendadas
 
@@ -34,27 +36,80 @@ Fontes oficiais consultadas em 07/09/2026:
 [TLS Render](https://render.com/docs/tls),
 [recuperação PostgreSQL](https://render.com/docs/postgresql-backups).
 
-## Bloqueios reais antes de exposição pública
+## Condições reais antes de exposição pública
 
-1. Rotas legadas `/api/dispositivos/`, `/api/analises/`, `/api/relatorios/` usam
-   `ModelViewSet` com `.objects.all()` e serializers com `fields='__all__'`.
-   Não há escopo por proprietário nesses viewsets. Um usuário autenticado pode
-   alcançar dados de outros usuários e informar relações alheias. Corrigir
-   listagem/detalhe/escrita/relacionamentos com testes entre usuários ou retirar
-   essas rotas da exposição pública após aprovação. Não basta CORS ou JWT.
-   Não alteradas aqui para não modificar regras legadas fora desta preparação.
-2. Login, refresh, Admin e API não têm rate limiting configurado. Definir limites
-   de borda antes do beta externo, incluindo IP real de proxy confiável e tamanho
-   de requisições. Throttle DRF em cache local não equivale a proteção distribuída
-   contra força bruta/DDoS. Nenhum mecanismo novo foi ativado nesta etapa.
-3. Resolver uploads privados antes de habilitá-los: disco efêmero perde arquivos;
-   servir PDFs publicamente poderia expor dados de clientes.
-4. Selecionar provedor/região/plano, validar dependências e Gunicorn em Linux limpo,
+1. Provisionar Redis compartilhado. Com `DEBUG=false`, o backend exige
+   `DJANGO_THROTTLE_CACHE_URL`; cache local é permitido apenas em desenvolvimento
+   ou na simulação loopback explicitamente marcada.
+2. Configurar a quantidade exata de proxies confiáveis em `DJANGO_NUM_PROXIES` e
+   garantir que o proxy remova/sobrescreva `X-Forwarded-For`. Aplicar também limite
+   de borda, tamanho máximo de body e timeouts: o throttle DRF é aproximado e não é
+   defesa contra DDoS.
+3. Não publicar `/media/`. Upload de PDF foi tornado somente leitura na API legada;
+   download autenticado e armazenamento persistente privado ainda não existem.
+4. Proteger `/admin/` com HTTPS, senha forte, conta individual e restrição no proxy;
+   avaliar 2FA posteriormente. O Admin permanece fora do throttle DRF.
+5. Selecionar provedor/região/plano, validar dependências e Gunicorn em Linux limpo,
    provisionar secrets fora do Git, confirmar TLS/proxy, backup e restauração.
 
-Os endpoints atuais de diagnósticos, findings, clientes, empresas e assinatura
-têm filtros por usuário no código inspecionado. A suíte existente cobre as regras
-atuais de diagnóstico/licença. Isso não certifica isolamento de toda API legada.
+## Segurança da API — ETAPA 12
+
+As rotas legadas foram mantidas por compatibilidade, mas agora o proprietário é
+sempre derivado de `request.user`: dispositivo por `cliente.usuario`, análise por
+`dispositivo.cliente.usuario` e relatório por
+`analise.dispositivo.cliente.usuario`. Listagem e lookup usam o mesmo escopo;
+IDs externos retornam 404. Relações graváveis têm queryset limitado ao usuário.
+`Analise.tecnico` é preenchido pelo servidor. Token QR, PDF e datas internas são
+somente leitura. Diagnósticos inconsistentes de outro dono também são excluídos do
+resumo de cliente.
+
+| Endpoint | Classe | Ownership | Scope de throttle |
+| --- | --- | --- | --- |
+| `POST /api/token/` | público | credenciais | `auth_ip` + `auth_account` |
+| `POST /api/token/refresh/` | público | refresh JWT | `refresh` |
+| `GET/HEAD /health/` | público | não aplicável | `health` |
+| `/api/me/`, empresas e clientes | autenticado | `request.user` | `read`/`write`; senha usa `password` |
+| dispositivos | autenticado | `cliente.usuario` | `read`/`write` |
+| análises legadas | autenticado | `dispositivo.cliente.usuario` | `read`/`write` |
+| relatórios legados | autenticado | cadeia da análise/dispositivo/cliente | `read`/`write` |
+| planos, licença e assinatura | autenticado | dados globais permitidos ou usuário | `read` |
+| checkout | autenticado | pagamento criado para `request.user` | `checkout` |
+| diagnósticos | autenticado | `Diagnostico.usuario` | `read`; criação usa `diagnostic` |
+| associação cliente-diagnóstico | autenticado | ambos do mesmo usuário | `write` |
+| findings | autenticado, somente leitura | `diagnostico.usuario` | `read` |
+| remediations | autenticado | diagnóstico e finding do usuário | `remediation` |
+| webhook Mercado Pago | público, HMAC obrigatório | reconciliação server-side | `webhook` |
+| `/admin/` | sessão + CSRF | privilégios do Django Admin | proxy/borda |
+
+Novos diagnósticos não podem injetar histórico de remediação, e findings novos
+sempre começam em `open`. Alterações de status seguem o endpoint de remediação.
+Hashes de confirmação e tokens brutos são retirados das representações da API,
+sem apagar a auditoria já persistida. Toda notificação do webhook, inclusive tipo
+ignorado, passa pela validação HMAC antes de receber resposta de sucesso.
+
+Limites iniciais do beta, todos configuráveis por ambiente:
+
+| Scope | Padrão | Identidade |
+| --- | ---: | --- |
+| login por IP | 30/min | IP confiável |
+| login por conta | 10/min | hash do username normalizado |
+| refresh | 60/min | IP confiável |
+| leitura autenticada | 300/min | usuário |
+| escrita autenticada | 60/min | usuário |
+| criação de diagnóstico | 60/min | usuário |
+| remediação | 60/min | usuário |
+| troca de senha | 5/hour | usuário |
+| checkout | 10/min | usuário |
+| webhook | 300/min | IP confiável |
+| health | 120/min | IP confiável |
+
+`OPTIONS` não consome cota. Excesso retorna 429 com `Retry-After`; falta de JWT
+continua 401, relação inválida do próprio request retorna 400 e objeto de outro
+usuário/inexistente retorna 404 para reduzir enumeração. O cache do throttle usa
+Redis em produção e LocMem apenas em desenvolvimento/teste. O algoritmo do DRF
+usa operações de cache não atômicas e pode ter pequena imprecisão sob concorrência;
+manter proteção de borda. Referências: [throttling DRF](https://www.django-rest-framework.org/api-guide/throttling/)
+e [cache Django](https://docs.djangoproject.com/en/6.1/topics/cache/).
 
 ## Variáveis e ambientes
 
@@ -83,6 +138,10 @@ sobre `.env`, carregado explicitamente a partir de `backend/`.
 | `DJANGO_HEALTHCHECK_DATABASE` | true padrão; false transforma health em liveness sem banco |
 | `DJANGO_STATIC_ROOT` | Opcional, padrão backend/staticfiles |
 | `DJANGO_MEDIA_ROOT` | Opcional, padrão backend/media; requer estratégia persistente privada |
+| `DJANGO_THROTTLE_CACHE_URL` | Obrigatória com DEBUG=false; URL privada `redis://` ou `rediss://` do cache compartilhado |
+| `DJANGO_REQUIRE_SHARED_THROTTLE_CACHE` | Padrão true quando DEBUG=false; override false é interno ao smoke loopback e não deve existir no servidor |
+| `DJANGO_NUM_PROXIES` | Número exato de proxies confiáveis; padrão 0 ignora X-Forwarded-For |
+| `DJANGO_THROTTLE_*_RATE` | Overrides dos limites da tabela; formato positivo como `30/min` |
 
 Nenhuma variável pública `VITE_*` pode conter senha, chave de servidor ou token.
 Chave fraca pode gerar warning de deploy; não o ignorar. Gerar a chave pelo gerenciador
@@ -114,7 +173,7 @@ Uma interface web futura precisa de sua origem HTTPS exata, não `*`.
 
 CSRF global permanece ativo. DRF usa JWT no header, não sessão; não necessita token
 CSRF de navegador para essas rotas. Admin usa sessão e mantém CSRF. O webhook externo
-preserva seu tratamento DRF sem JWT e sua validação HMAC; não foi reimplementado.
+continua sem JWT e com validação HMAC obrigatória antes de qualquer tipo ser aceito.
 
 Referências: [CORS oficial](https://github.com/adamchainz/django-cors-headers),
 [throttling DRF](https://www.django-rest-framework.org/api-guide/throttling/).
@@ -189,7 +248,7 @@ provedor. Logs do proxy/servidor precisam da mesma política, não apenas Django
 Email de produção fica dummy até existir configuração de envio aprovada, evitando
 que conteúdo seja emitido pelo backend console.
 
-`GET /health/` e HEAD são públicos, sem cache. Retorna somente `{"status":"ok"}`
+`GET /health/` e HEAD são públicos, sem cache e limitados de forma leve. Retorna somente `{"status":"ok"}`
 com 200; por padrão faz `SELECT 1`. Falha de banco → 503 com `{"status":"unavailable"}`.
 Sem host, versão, configuração ou exceção no corpo. Sonda não certifica migrations,
 JWT, licença, pagamentos ou disponibilidade total. Evitar frequência excessiva.
@@ -214,11 +273,12 @@ incluindo `/api/pagamentos/mercadopago/webhook/`, preservando HMAC.
 
 Admin permanece em `/admin/`, com sessão/CSRF, static e cookies Secure. Usar senha
 forte e conta individual; restringir acesso por rede/proxy e avaliar 2FA. Não criar
-nem compartilhar credenciais. Não há proteção adicional de login já implantada.
+nem compartilhar credenciais. Login JWT possui cotas por IP e por conta; Admin deve
+receber uma política própria no proxy porque não passa pelo DRF.
 
 ## Checklist de deploy futuro (não executado)
 
-1. Resolver bloqueios de isolamento e abuso, aprovar provedor, custo e região.
+1. Provisionar Redis/proxy de borda e aprovar provedor, custo e região.
 2. Testar instalação de requirements em Linux limpo; manter versão Python validada
    (local: 3.14.3) e compatibilidade das versões fixadas, sem upgrade automático.
 3. Criar banco/serviço somente com aprovação, configurar secrets, rede, TLS e backup.
@@ -251,47 +311,53 @@ Após backend online aprovado: testar `/health/` → obter URL HTTPS real → de
 → login autorizado → diagnóstico físico somente em etapa autorizada com aparelho.
 Rebuild obrigatório ao mudar URL. Nenhuma URL fictícia foi inserida no aplicativo.
 Antes do instalador ainda faltam ADB/distribuição, assinatura, ícone/versão e smoke
-autenticado contra API real conforme ETAPA 10. Nenhuma ETAPA 12 iniciada.
+autenticado contra API real conforme ETAPA 10.
 
 ## Validação local
 
-Baseline: check e makemigrations --check aprovados, 121 testes em 384,221 s, OK.
-Novos testes de configuração/HTTP/log: 24 aprovados na primeira execução.
-`python scripts/smoke_production.py` usa porta loopback automática, chave efêmera,
-DEBUG=false, PostgreSQL local read-only e static temporário removido ao terminar.
-Não grava .env, não faz login, scan, migration ou pagamento. Usa Waitress e testa
-health, Admin/static, JWT obrigatório, CORS e host inválido. TLS/proxy são simulados
-nos system checks; isso não certifica HTTPS real nem execução Gunicorn/Linux.
+O baseline anterior à ETAPA 12 permaneceu aprovado: `check`, ausência de migrations
+e 145 testes. Os testes desta etapa usam o banco temporário criado e destruído pelo
+Django; os cenários A/B não alteraram usuários, diagnósticos físicos ou registros do
+banco de desenvolvimento.
 
-Resultados finais em 07/09/2026:
+Resultados finais em 08/09/2026:
 
 | Verificação | Resultado |
 | --- | --- |
-| `manage.py check` | OK no ambiente local seguro e com DEBUG=true explícito |
-| `manage.py check --deploy` | W004 (HSTS=0) e W008 (redirect=false), esperados no HTTP local; não silenciados |
-| Check deploy com flags HTTPS simuladas e chave efêmera forte | OK, nenhum warning; não representa TLS real |
+| `manage.py check` | OK com `DJANGO_DEBUG=true` explícito |
+| `manage.py check --deploy` | Somente W004 (HSTS=0) e W008 (redirect=false), esperados sem HTTPS real; nenhum warning silenciado |
 | `manage.py makemigrations --check` | Nenhuma alteração detectada |
-| `manage.py test` final | 145 testes em 382,018 s, OK; banco de testes removido pelo Django |
-| `manage.py collectstatic --noinput` | 157 arquivos copiados, 453 pós-processados, OK |
-| `scripts/smoke_production.py` | PASS com Waitress e banco local read-only |
-| `pip check` e resolução dry-run requirements no Windows | OK; Gunicorn corretamente excluído por plataforma |
-| Desktop teste/build | Não repetidos: nenhum arquivo desktop alterado nesta etapa |
-| `git diff --check` | OK |
-| Git | main no checkpoint 12f65c8, igual ao tracking origin/main, 6 arquivos versionados alterados e 5 novos |
+| `manage.py test core.test_api_security` | 33 testes em 2,074 s, OK |
+| `manage.py test` | 182 testes em 162,169 s, OK; banco temporário removido |
+| `scripts/smoke_production.py` | PASS: Waitress, PostgreSQL `SELECT 1`, health, Admin/static, JWT e CORS em HTTP loopback |
+| `pip check` | OK para o ambiente instalado |
+| Cliente Redis no venv local | Ainda não instalado; `redis==8.1.0` está declarado para a próxima instalação de requirements |
+| Redis compartilhado/TLS/proxy/Gunicorn Linux | Não provisionados nem validados nesta etapa |
+| Desktop teste/build | Não executados: nenhum arquivo desktop foi alterado |
+| `git diff --check` | OK; apenas avisos informativos de conversão LF/CRLF no Windows |
 
-O primeiro smoke encontrou ordem incorreta no próprio script: WSGI/WhiteNoise era
-inicializado antes do collectstatic temporário. A ordem foi corrigida e o smoke
-completo passou. Nenhum processo da simulação ficou atendendo após sua conclusão.
+Cobertura de segurança adicionada: isolamento bidirecional entre usuários A/B em
+listas, detalhes, POST, PATCH, PUT e DELETE; tentativa por ID, serial e query string;
+relações cruzadas; diagnóstico, cliente, finding e remediação; campos controlados
+pelo servidor; redaction de segredos; idempotência; login, refresh, leitura, escrita,
+diagnóstico, remediação, webhook e health com respostas 429 e `Retry-After`.
 
-Arquivos alterados: `.gitignore`, `backend/.env.example`, `backend/requirements.txt`,
-`backend/devicecheck_backend/settings.py`, `backend/devicecheck_backend/urls.py`,
-`backend/devicecheck_backend/wsgi.py`.
-Criados: este documento, `backend/core/test_production.py`,
+Arquivos alterados na ETAPA 12: este documento, `backend/.env.example`,
+`backend/core/security_projection.py`, `backend/core/serializers.py`,
+`backend/core/test_production.py`, `backend/core/urls.py`, `backend/core/views.py`,
 `backend/devicecheck_backend/health.py`, `backend/devicecheck_backend/observability.py`,
-`backend/scripts/smoke_production.py`. Static é saída gerada ignorada pelo Git.
-Dependências declaradas: dj-database-url 3.1.2, WhiteNoise 6.12.0, Gunicorn 26.2.0
-(não Windows), Waitress 3.0.2 (Windows), Pillow 12.3.0 (já instalado e usado por
-ImageField, antes não declarado). Não houve atualização das dependências existentes.
+`backend/devicecheck_backend/settings.py`, `backend/devicecheck_backend/urls.py`,
+`backend/requirements.txt` e `backend/scripts/smoke_production.py`.
 
-**BACKEND DIAGPRO PRONTO PARA PRIMEIRO DEPLOY DE BETA: NÃO**, enquanto os bloqueios
-de segurança e operação acima não forem resolvidos e validados.
+Arquivos criados na ETAPA 12: `backend/core/auth_views.py`,
+`backend/core/test_api_security.py` e `backend/core/throttling.py`.
+
+Não houve alteração de modelo ou migration. Não houve scan, conexão ADB, remoção,
+pagamento real, deploy, commit ou push.
+
+**API DIAGPRO SEGURA O SUFICIENTE PARA PRIMEIRO DEPLOY DE BETA: NÃO.** O isolamento
+e a proteção de abuso no código estão aprovados, mas a API não deve receber tráfego
+público até Redis compartilhado, topologia confiável de proxy/IP, TLS/redirecionamento,
+proteção de borda, backup/restauração e política de media privada serem provisionados
+e testados no ambiente real. O download autenticado de relatórios privados também
+continua como pendência; `/media/` não deve ser publicado.

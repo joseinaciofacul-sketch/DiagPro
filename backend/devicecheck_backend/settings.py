@@ -195,6 +195,78 @@ if env_bool('DJANGO_TRUST_PROXY_SSL_HEADER'):
 EMAIL_BACKEND = ('django.core.mail.backends.console.EmailBackend' if DEBUG
                  else 'django.core.mail.backends.dummy.EmailBackend')
 
+
+def env_nonnegative_int(name, default=0):
+    raw_value = os.environ.get(name, str(default)).strip()
+    if not raw_value.isdigit():
+        raise ImproperlyConfigured(f'{name} deve ser um número inteiro não negativo.')
+    value = int(raw_value)
+    if value > 32:
+        raise ImproperlyConfigured(f'{name} excede o limite operacional aceito.')
+    return value
+
+
+def env_rate(name, default):
+    value = os.environ.get(name, default).strip().lower()
+    parts = value.split('/')
+    allowed_periods = {
+        's', 'sec', 'second', 'seconds', 'm', 'min', 'minute', 'minutes',
+        'h', 'hour', 'hours', 'd', 'day', 'days',
+    }
+    if len(parts) != 2 or not parts[0].isdigit() or int(parts[0]) < 1 or parts[1] not in allowed_periods:
+        raise ImproperlyConfigured(
+            f'{name} deve usar o formato positivo quantidade/período, por exemplo 30/min.'
+        )
+    return value
+
+
+DIAGPRO_THROTTLE_RATES = {
+    'auth_ip': env_rate('DJANGO_THROTTLE_AUTH_IP_RATE', '30/min'),
+    'auth_account': env_rate('DJANGO_THROTTLE_AUTH_ACCOUNT_RATE', '10/min'),
+    'refresh': env_rate('DJANGO_THROTTLE_REFRESH_RATE', '60/min'),
+    'read': env_rate('DJANGO_THROTTLE_READ_RATE', '300/min'),
+    'write': env_rate('DJANGO_THROTTLE_WRITE_RATE', '60/min'),
+    'diagnostic': env_rate('DJANGO_THROTTLE_DIAGNOSTIC_RATE', '60/min'),
+    'remediation': env_rate('DJANGO_THROTTLE_REMEDIATION_RATE', '60/min'),
+    'password': env_rate('DJANGO_THROTTLE_PASSWORD_RATE', '5/hour'),
+    'checkout': env_rate('DJANGO_THROTTLE_CHECKOUT_RATE', '10/min'),
+    'webhook': env_rate('DJANGO_THROTTLE_WEBHOOK_RATE', '300/min'),
+    'health': env_rate('DJANGO_THROTTLE_HEALTH_RATE', '120/min'),
+}
+DIAGPRO_THROTTLE_CACHE_ALIAS = 'throttle'
+DIAGPRO_NUM_PROXIES = env_nonnegative_int('DJANGO_NUM_PROXIES')
+DIAGPRO_THROTTLE_CACHE_URL = os.environ.get('DJANGO_THROTTLE_CACHE_URL', '').strip()
+if DIAGPRO_THROTTLE_CACHE_URL and not DIAGPRO_THROTTLE_CACHE_URL.startswith(('redis://', 'rediss://')):
+    raise ImproperlyConfigured('DJANGO_THROTTLE_CACHE_URL deve usar redis:// ou rediss://.')
+DIAGPRO_REQUIRE_SHARED_THROTTLE_CACHE = env_bool(
+    'DJANGO_REQUIRE_SHARED_THROTTLE_CACHE',
+    not DEBUG,
+)
+if DIAGPRO_REQUIRE_SHARED_THROTTLE_CACHE and not DIAGPRO_THROTTLE_CACHE_URL:
+    raise ImproperlyConfigured(
+        'Configure DJANGO_THROTTLE_CACHE_URL com Redis antes de executar em produção.'
+    )
+
+CACHES = {
+    'default': {
+        'BACKEND': 'django.core.cache.backends.locmem.LocMemCache',
+        'LOCATION': 'diagpro-default-local',
+    },
+    DIAGPRO_THROTTLE_CACHE_ALIAS: (
+        {
+            'BACKEND': 'django.core.cache.backends.redis.RedisCache',
+            'LOCATION': DIAGPRO_THROTTLE_CACHE_URL,
+            'KEY_PREFIX': 'diagpro',
+        }
+        if DIAGPRO_THROTTLE_CACHE_URL else
+        {
+            'BACKEND': 'django.core.cache.backends.locmem.LocMemCache',
+            'LOCATION': 'diagpro-throttle-local',
+            'KEY_PREFIX': 'diagpro',
+        }
+    ),
+}
+
 REST_FRAMEWORK = {
     'DEFAULT_AUTHENTICATION_CLASSES': (
         'rest_framework_simplejwt.authentication.JWTAuthentication',
@@ -202,6 +274,13 @@ REST_FRAMEWORK = {
     'DEFAULT_PERMISSION_CLASSES': (
         'rest_framework.permissions.IsAuthenticated',
     ),
+    'DEFAULT_THROTTLE_CLASSES': (
+        'core.throttling.DiagProScopedRateThrottle',
+    ),
+    'DEFAULT_THROTTLE_RATES': DIAGPRO_THROTTLE_RATES,
+    # Zero ignora X-Forwarded-For. Produção deve informar a quantidade exata
+    # de proxies confiáveis que sobrescrevem esse header.
+    'NUM_PROXIES': DIAGPRO_NUM_PROXIES,
 }
 
 SIMPLE_JWT = {

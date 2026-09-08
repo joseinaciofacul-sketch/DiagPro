@@ -87,6 +87,10 @@ class SecurityFindingPayloadSerializer(serializers.Serializer):
 
     def validate(self, attrs):
         attrs = super().validate(attrs)
+        if attrs['status'] != 'open':
+            raise serializers.ValidationError({
+                'status': 'Findings de um diagnóstico novo devem iniciar abertos.',
+            })
         subject_id = attrs['subjectId']
         pattern = PACKAGE_PATTERN if attrs['subjectType'] == 'app' else SAFE_SUBJECT_PATTERN
         if not pattern.fullmatch(subject_id):

@@ -26,7 +26,11 @@ urlpatterns = [path('broken/', broken_view)]
 
 class ProductionSettingsTests(SimpleTestCase):
     def configuration(self, **values):
-        environment = {'DJANGO_SECRET_KEY': 'test-only-not-a-real-secret', **values}
+        environment = {
+            'DJANGO_SECRET_KEY': 'test-only-not-a-real-secret',
+            'DJANGO_THROTTLE_CACHE_URL': 'redis://localhost:6379/1',
+            **values,
+        }
         settings_file = Path(__file__).resolve().parents[1] / 'devicecheck_backend/settings.py'
         with patch.dict(os.environ, environment, clear=True), patch('dotenv.load_dotenv'):
             return runpy.run_path(str(settings_file))
@@ -49,11 +53,39 @@ class ProductionSettingsTests(SimpleTestCase):
         self.assertEqual(self.configuration(DJANGO_SECRET_KEY='new', SECRET_KEY='legacy')['SECRET_KEY'], 'new')
 
     def test_explicit_development(self):
-        config = self.configuration(DJANGO_DEBUG='true')
+        config = self.configuration(DJANGO_DEBUG='true', DJANGO_THROTTLE_CACHE_URL='')
         self.assertTrue(config['DEBUG'])
         self.assertFalse(config['SESSION_COOKIE_SECURE'])
         self.assertIn('http://localhost:5173', config['CORS_ALLOWED_ORIGINS'])
         self.assertFalse(config['SECURE_SSL_REDIRECT'])
+        self.assertIn('locmem', config['CACHES']['throttle']['BACKEND'].lower())
+
+    def test_production_requires_shared_throttle_cache(self):
+        with self.assertRaisesRegex(ImproperlyConfigured, 'DJANGO_THROTTLE_CACHE_URL'):
+            self.configuration(DJANGO_THROTTLE_CACHE_URL='')
+
+    def test_production_throttle_cache_and_proxy_count_are_explicit(self):
+        config = self.configuration(
+            DJANGO_THROTTLE_CACHE_URL='rediss://cache.example.test:6380/2',
+            DJANGO_NUM_PROXIES='2',
+        )
+        self.assertEqual(
+            config['CACHES']['throttle']['LOCATION'],
+            'rediss://cache.example.test:6380/2',
+        )
+        self.assertEqual(config['REST_FRAMEWORK']['NUM_PROXIES'], 2)
+
+    def test_invalid_throttle_configuration_fails_closed_without_echoing_url(self):
+        with self.assertRaises(ImproperlyConfigured):
+            self.configuration(DJANGO_THROTTLE_CACHE_URL='https://user:secret@cache.example.test')
+        for values in (
+            {'DJANGO_NUM_PROXIES': '-1'},
+            {'DJANGO_NUM_PROXIES': 'many'},
+            {'DJANGO_THROTTLE_READ_RATE': 'unlimited'},
+            {'DJANGO_THROTTLE_READ_RATE': '0/min'},
+        ):
+            with self.subTest(values=values), self.assertRaises(ImproperlyConfigured):
+                self.configuration(**values)
 
     def test_invalid_boolean_fails(self):
         with self.assertRaises(ImproperlyConfigured):
@@ -204,3 +236,13 @@ class SafeLoggingTests(SimpleTestCase):
             middleware(RequestFactory().post('/api/pagamentos/mercadopago/webhook/'))
         self.assertEqual(output.records[0].msg, 'webhook_not_processed')
         self.assertNotIn('sensitive-marker', SafeJsonFormatter().format(output.records[0]))
+
+    def test_throttle_event_contains_only_fixed_operational_fields(self):
+        response = HttpResponse(status=429)
+        middleware = OperationalEventsMiddleware(lambda request: response)
+        with self.assertLogs('diagpro.operations', level='WARNING') as output:
+            middleware(RequestFactory().post('/api/token/', {'password': 'sensitive-marker'}))
+        formatted = SafeJsonFormatter().format(output.records[0])
+        self.assertEqual(output.records[0].msg, 'request_throttled')
+        self.assertNotIn('sensitive-marker', formatted)
+        self.assertEqual(json.loads(formatted)['status'], 429)

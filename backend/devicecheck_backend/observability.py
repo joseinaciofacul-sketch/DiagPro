@@ -9,7 +9,7 @@ from django.db import DatabaseError
 EVENTS = frozenset({
     'backend_started', 'database_failure', 'diagnostic_saved',
     'diagnostic_rejected', 'payment_failure', 'webhook_rejected',
-    'webhook_not_processed',
+    'webhook_not_processed', 'request_throttled',
 })
 logger = logging.getLogger('diagpro.operations')
 
@@ -39,7 +39,9 @@ class OperationalEventsMiddleware:
     def __call__(self, request):
         response = self.get_response(request)
         event = None
-        if request.method == 'POST':
+        if response.status_code == 429:
+            event = 'request_throttled'
+        elif request.method == 'POST':
             if request.path == '/api/diagnosticos/':
                 if response.status_code == 201:
                     event = 'diagnostic_saved'

@@ -3,13 +3,18 @@ from django.conf import settings
 from django.db import connection, DatabaseError
 from django.http import JsonResponse
 from django.views.decorators.cache import never_cache
-from django.views.decorators.http import require_safe
+from rest_framework.decorators import api_view, authentication_classes, permission_classes, throttle_classes
+from rest_framework.permissions import AllowAny
 
+from core.throttling import HealthIPRateThrottle
 from .observability import logger
 
 
 @never_cache
-@require_safe
+@api_view(['GET', 'HEAD'])
+@authentication_classes([])
+@permission_classes([AllowAny])
+@throttle_classes([HealthIPRateThrottle])
 def health(request):
     if settings.DIAGPRO_HEALTHCHECK_DATABASE:
         try:

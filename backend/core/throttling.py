@@ -3,6 +3,7 @@ from hashlib import sha256
 
 from django.conf import settings
 from django.core.cache import caches
+from rest_framework.exceptions import APIException
 from rest_framework.throttling import ScopedRateThrottle, SimpleRateThrottle
 
 from devicecheck_backend.observability import logger
@@ -12,15 +13,24 @@ def _throttle_cache():
     return caches[settings.DIAGPRO_THROTTLE_CACHE_ALIAS]
 
 
-class HealthThrottleCacheUnavailable(Exception):
-    """Marks a failure raised specifically by a health throttle cache call."""
+def _is_known_cache_failure(exc):
+    if isinstance(exc, OSError):
+        return True
+    return any(
+        base.__module__ == 'redis.exceptions' and base.__name__ == 'RedisError'
+        for base in type(exc).__mro__
+    )
+
+
+class ThrottleCacheUnavailable(Exception):
+    """Marks a failure raised specifically by a throttle cache call."""
 
     def __init__(self, error_type):
         self.error_type = error_type
-        super().__init__('health throttle cache unavailable')
+        super().__init__('throttle cache unavailable')
 
 
-class HealthThrottleCache:
+class GuardedThrottleCache:
     """Narrowly translates cache I/O failures without hiding throttle bugs."""
 
     def __init__(self, backend):
@@ -30,13 +40,23 @@ class HealthThrottleCache:
         try:
             return self.backend.get(*args, **kwargs)
         except Exception as exc:
-            raise HealthThrottleCacheUnavailable(type(exc).__name__) from exc
+            if not _is_known_cache_failure(exc):
+                raise
+            raise ThrottleCacheUnavailable(type(exc).__name__) from exc
 
     def set(self, *args, **kwargs):
         try:
             return self.backend.set(*args, **kwargs)
         except Exception as exc:
-            raise HealthThrottleCacheUnavailable(type(exc).__name__) from exc
+            if not _is_known_cache_failure(exc):
+                raise
+            raise ThrottleCacheUnavailable(type(exc).__name__) from exc
+
+
+class AuthenticationThrottleUnavailable(APIException):
+    status_code = 503
+    default_detail = 'Serviço de autenticação temporariamente indisponível.'
+    default_code = 'authentication_temporarily_unavailable'
 
 
 class DiagProScopedRateThrottle(ScopedRateThrottle):
@@ -77,11 +97,30 @@ class ConfiguredIPRateThrottle(SimpleRateThrottle):
         return self.cache_format % {'scope': self.scope, 'ident': self.get_ident(request)}
 
 
-class LoginIPRateThrottle(ConfiguredIPRateThrottle):
+class ProtectedLoginRateThrottle(ConfiguredIPRateThrottle):
+    """Fail closed when the shared login rate-limit cache is unavailable."""
+
+    def allow_request(self, request, view):
+        if request.method == 'OPTIONS':
+            return True
+
+        self.cache = GuardedThrottleCache(_throttle_cache())
+        try:
+            return SimpleRateThrottle.allow_request(self, request, view)
+        except ThrottleCacheUnavailable as exc:
+            logger.warning(
+                'throttle_cache_failure',
+                exc_info=True,
+                extra={'error_type': exc.error_type, 'status_code': 503},
+            )
+            raise AuthenticationThrottleUnavailable from None
+
+
+class LoginIPRateThrottle(ProtectedLoginRateThrottle):
     scope = 'auth_ip'
 
 
-class LoginAccountRateThrottle(ConfiguredIPRateThrottle):
+class LoginAccountRateThrottle(ProtectedLoginRateThrottle):
     """Add a privacy-preserving account bucket to the login IP bucket."""
 
     scope = 'auth_account'
@@ -111,10 +150,10 @@ class HealthIPRateThrottle(ConfiguredIPRateThrottle):
         if request.method == 'OPTIONS':
             return True
 
-        self.cache = HealthThrottleCache(_throttle_cache())
+        self.cache = GuardedThrottleCache(_throttle_cache())
         try:
             return SimpleRateThrottle.allow_request(self, request, view)
-        except HealthThrottleCacheUnavailable as exc:
+        except ThrottleCacheUnavailable as exc:
             # Readiness must still report database health during a temporary Redis
             # outage. Other endpoints keep the normal cache error behavior.
             logger.warning(

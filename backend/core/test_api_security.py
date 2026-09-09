@@ -1,17 +1,23 @@
 """Cross-account isolation, server authority and abuse-protection tests."""
 import hashlib
 import hmac
+import json
 from datetime import timedelta
+from ssl import SSLError
+from unittest.mock import patch
 from uuid import uuid4
 
 from django.conf import settings
 from django.contrib.auth import get_user_model
 from django.core.cache import caches
+from django.db import OperationalError
 from django.test import override_settings
 from django.utils import timezone
 from rest_framework import status
 from rest_framework.test import APITestCase
 from rest_framework_simplejwt.tokens import RefreshToken
+
+from devicecheck_backend.observability import SafeJsonFormatter
 
 from .models import (
     Analise, Cliente, Diagnostico, Dispositivo, Licenca, Plano, Relatorio,
@@ -20,6 +26,17 @@ from .models import (
 
 
 FAST_PASSWORD_HASHERS = ['django.contrib.auth.hashers.MD5PasswordHasher']
+
+RedisErrorForTest = type('RedisError', (Exception,), {'__module__': 'redis.exceptions'})
+RedisConnectionErrorForTest = type(
+    'ConnectionError', (RedisErrorForTest,), {'__module__': 'redis.exceptions'},
+)
+RedisTimeoutErrorForTest = type(
+    'TimeoutError', (RedisErrorForTest,), {'__module__': 'redis.exceptions'},
+)
+RedisAuthenticationErrorForTest = type(
+    'AuthenticationError', (RedisErrorForTest,), {'__module__': 'redis.exceptions'},
+)
 
 
 @override_settings(PASSWORD_HASHERS=FAST_PASSWORD_HASHERS)
@@ -455,6 +472,65 @@ class ThrottlingApiTests(APITestCase):
                 'username': self.user_a.username, 'password': 'test-password',
             }, format='json')
         self.assertEqual(response.status_code, 200, response.data)
+
+    def test_login_cache_failures_return_safe_503(self):
+        cases = (
+            ('connection_get', 'get', RedisConnectionErrorForTest('rediss://default:redis-secret@cache.test')),
+            ('timeout_get', 'get', RedisTimeoutErrorForTest('redis-timeout-secret')),
+            ('tls_get', 'get', SSLError('redis-tls-secret')),
+            ('authentication_get', 'get', RedisAuthenticationErrorForTest('redis-auth-secret')),
+            ('connection_set', 'set', RedisConnectionErrorForTest('redis-write-secret')),
+        )
+        for label, cache_operation, error in cases:
+            with self.subTest(label=label), patch(
+                'core.throttling._throttle_cache',
+            ) as throttle_cache, self.assertLogs(
+                'diagpro.operations', level='WARNING',
+            ) as output:
+                throttle_cache.return_value.get.return_value = []
+                getattr(throttle_cache.return_value, cache_operation).side_effect = error
+                response = self.client.post('/api/token/', {
+                    'username': self.user_a.username,
+                    'password': 'password-must-never-be-logged',
+                }, format='json')
+
+            self.assertEqual(response.status_code, 503, response.data)
+            self.assertNotIn('access', response.data)
+            self.assertNotIn('refresh', response.data)
+            serialized_response = response.content.decode()
+            self.assertNotIn('password-must-never-be-logged', serialized_response)
+            self.assertNotIn('secret', serialized_response)
+            formatted = SafeJsonFormatter().format(output.records[0])
+            event = json.loads(formatted)
+            self.assertEqual(event['event'], 'throttle_cache_failure')
+            self.assertEqual(event['error_type'], type(error).__name__)
+            self.assertEqual(event['status'], 503)
+            self.assertNotIn('password-must-never-be-logged', formatted)
+            self.assertNotIn('secret', formatted)
+
+    def test_login_database_failure_returns_safe_503(self):
+        with patch(
+            'rest_framework_simplejwt.serializers.authenticate',
+            side_effect=OperationalError('postgresql://database-secret@host/db'),
+        ), self.assertLogs('diagpro.operations', level='ERROR') as output:
+            response = self.client.post('/api/token/', {
+                'username': self.user_a.username,
+                'password': 'password-must-never-be-logged',
+            }, format='json')
+
+        self.assertEqual(response.status_code, 503, response.data)
+        self.assertNotIn('access', response.data)
+        self.assertNotIn('refresh', response.data)
+        serialized_response = response.content.decode()
+        self.assertNotIn('password-must-never-be-logged', serialized_response)
+        self.assertNotIn('database-secret', serialized_response)
+        formatted = SafeJsonFormatter().format(output.records[0])
+        event = json.loads(formatted)
+        self.assertEqual(event['event'], 'database_failure')
+        self.assertEqual(event['error_type'], 'OperationalError')
+        self.assertEqual(event['status'], 503)
+        self.assertNotIn('password-must-never-be-logged', formatted)
+        self.assertNotIn('database-secret', formatted)
 
     def test_refresh_is_throttled_without_changing_token_contract(self):
         refresh = str(RefreshToken.for_user(self.user_a))

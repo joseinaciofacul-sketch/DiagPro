@@ -154,11 +154,47 @@ class ProductionHttpTests(SimpleTestCase):
 
     @override_settings(DIAGPRO_HEALTHCHECK_DATABASE=True)
     def test_health_database_failure_is_generic(self):
-        with patch('devicecheck_backend.health.connection') as database:
+        with (
+            patch('devicecheck_backend.health.connection') as database,
+            self.assertLogs('diagpro.operations', level='ERROR') as output,
+        ):
             database.cursor.side_effect = OperationalError('secret-local-path')
             response = self.client.get('/health/')
         self.assertEqual(response.status_code, 503)
         self.assertEqual(response.json(), {'status': 'unavailable'})
+        formatted = SafeJsonFormatter().format(output.records[0])
+        self.assertEqual(json.loads(formatted)['error_type'], 'OperationalError')
+        self.assertNotIn('secret-local-path', formatted)
+        self.assertNotIn('secret-local-path', response.content.decode())
+
+    @override_settings(DIAGPRO_HEALTHCHECK_DATABASE=False)
+    def test_health_get_and_head_survive_temporary_redis_failure(self):
+        cases = (
+            ('get', 'get'),
+            ('head', 'get'),
+            ('get', 'set'),
+        )
+        for method, cache_operation in cases:
+            with self.subTest(method=method, cache_operation=cache_operation), patch(
+                'core.throttling._throttle_cache',
+            ) as throttle_cache, self.assertLogs(
+                'diagpro.operations', level='WARNING',
+            ) as output:
+                throttle_cache.return_value.get.return_value = []
+                getattr(throttle_cache.return_value, cache_operation).side_effect = ConnectionError(
+                    'rediss://default:secret@cache.example.test'
+                )
+                response = getattr(self.client, method)('/health/')
+
+            self.assertEqual(response.status_code, 200)
+            if method == 'get':
+                self.assertEqual(response.json(), {'status': 'ok'})
+            formatted = SafeJsonFormatter().format(output.records[0])
+            event = json.loads(formatted)
+            self.assertEqual(event['event'], 'throttle_cache_failure')
+            self.assertEqual(event['error_type'], 'ConnectionError')
+            self.assertNotIn('secret', formatted)
+            self.assertNotIn('secret', response.content.decode())
 
     @override_settings(CORS_ALLOWED_ORIGINS=['null', 'https://frontend.example.test'])
     def test_cors_preflight_explicit_origins(self):

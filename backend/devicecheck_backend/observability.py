@@ -2,6 +2,7 @@
 from datetime import datetime, timezone
 import json
 import logging
+import re
 
 from django.db import DatabaseError
 
@@ -9,9 +10,10 @@ from django.db import DatabaseError
 EVENTS = frozenset({
     'backend_started', 'database_failure', 'diagnostic_saved',
     'diagnostic_rejected', 'payment_failure', 'webhook_rejected',
-    'webhook_not_processed', 'request_throttled',
+    'webhook_not_processed', 'request_throttled', 'throttle_cache_failure',
 })
 logger = logging.getLogger('diagpro.operations')
+SAFE_ERROR_TYPE = re.compile(r'^[A-Za-z_][A-Za-z0-9_]{0,79}$')
 
 
 class SafeJsonFormatter(logging.Formatter):
@@ -28,6 +30,9 @@ class SafeJsonFormatter(logging.Formatter):
         status = getattr(record, 'status_code', None)
         if type(status) is int and 100 <= status <= 599:
             result['status'] = status
+        error_type = getattr(record, 'error_type', None)
+        if isinstance(error_type, str) and SAFE_ERROR_TYPE.fullmatch(error_type):
+            result['error_type'] = error_type
         return json.dumps(result, ensure_ascii=True)
 
 

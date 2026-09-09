@@ -21,7 +21,11 @@ def health(request):
             with connection.cursor() as cursor:
                 cursor.execute('SELECT 1')
                 cursor.fetchone()
-        except DatabaseError:
-            logger.error('database_failure')
+        except DatabaseError as exc:
+            logger.error(
+                'database_failure',
+                exc_info=True,
+                extra={'error_type': type(exc).__name__},
+            )
             return JsonResponse({'status': 'unavailable'}, status=503)
     return JsonResponse({'status': 'ok'})

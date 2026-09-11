@@ -26,6 +26,8 @@ function getInstalledApps({ serial } = {}) {
 
 contextBridge.exposeInMainWorld('diagpro', {
   reportClientEvent: (payload) => ipcRenderer.invoke('client-event', { event: payload?.event }),
+  startGoogleAuth: ({ apiBaseUrl }) => ipcRenderer.invoke('google-auth-start', { apiBaseUrl }),
+  cancelGoogleAuth: () => ipcRenderer.invoke('google-auth-cancel'),
   getDeviceStatus: () => ipcRenderer.invoke('get-device-status'),
   checkAdb: () => ipcRenderer.invoke('check-adb'),
   onDeviceStatus: (callback) => assinar('device-status-changed', callback),

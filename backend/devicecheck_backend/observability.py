@@ -11,6 +11,7 @@ EVENTS = frozenset({
     'backend_started', 'database_failure', 'diagnostic_saved',
     'diagnostic_rejected', 'payment_failure', 'webhook_rejected',
     'webhook_not_processed', 'request_throttled', 'throttle_cache_failure',
+    'google_auth_started', 'google_auth_success', 'google_auth_failed',
 })
 logger = logging.getLogger('diagpro.operations')
 SAFE_ERROR_TYPE = re.compile(r'^[A-Za-z_][A-Za-z0-9_]{0,79}$')

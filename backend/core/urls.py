@@ -17,6 +17,11 @@ from .views import (
     SubscriptionCheckoutView,
     MercadoPagoWebhookView,
 )
+from .google_auth_views import (
+    GoogleOAuthCallbackView,
+    GoogleOAuthCompleteView,
+    GoogleOAuthStartView,
+)
 
 router = DefaultRouter()
 router.register(r'empresas', EmpresaViewSet, basename='empresa')
@@ -29,6 +34,9 @@ router.register(r'diagnosticos', DiagnosticoViewSet, basename='diagnostico')
 router.register(r'security/findings', SecurityFindingViewSet, basename='security-finding')
 
 urlpatterns = [
+    path('auth/google/start/', GoogleOAuthStartView.as_view(), name='google-oauth-start'),
+    path('auth/google/callback/', GoogleOAuthCallbackView.as_view(), name='google-oauth-callback'),
+    path('auth/google/complete/', GoogleOAuthCompleteView.as_view(), name='google-oauth-complete'),
     path('me/', CurrentUserView.as_view(), name='current-user'),
     path('me/password/', ChangePasswordView.as_view(), name='change-password'),
     path('planos/', PlanListView.as_view(), name='plan-list'),

@@ -4,7 +4,7 @@
   "description": "Diagnóstico técnico Android para assistências",
   "main": "main.js",
   "scripts": {
-    "test": "node --test preload.test.js rendererTarget.test.js src/utils/scanSession.test.mjs adb/adbClient.test.js adb/scanCoordinator.test.js security/parsers/parsers.test.js security/collectors/collectors.test.js security/securityAnalyzer.test.js security/ruleEngine.test.js security/falsePositive.test.js security/securityCoverage.test.js security/riskScorer.test.js remediation/remediation.test.js remediation/remediationService.test.js payments/checkout.test.js electronPolicy.test.js productionLogger.test.js src/config/apiBase.test.mjs",
+    "test": "node --test preload.test.js rendererTarget.test.js googleAuth.test.js src/utils/googleLogin.test.mjs src/utils/tokenStorage.test.mjs src/utils/scanSession.test.mjs adb/adbClient.test.js adb/scanCoordinator.test.js security/parsers/parsers.test.js security/collectors/collectors.test.js security/securityAnalyzer.test.js security/ruleEngine.test.js security/falsePositive.test.js security/securityCoverage.test.js security/riskScorer.test.js remediation/remediation.test.js remediation/remediationService.test.js payments/checkout.test.js electronPolicy.test.js productionLogger.test.js src/config/apiBase.test.mjs",
     "dev": "vite",
     "electron": "electron .",
     "build": "vite build",

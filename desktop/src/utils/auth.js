@@ -1,7 +1,12 @@
 import { apiUrl } from '../config/api.js'
 
-const ACCESS_KEY = 'diagpro_access_token'
-const REFRESH_KEY = 'diagpro_refresh_token'
+import {
+  ACCESS_KEY,
+  clearSession,
+  readAccessToken,
+  readRefreshToken,
+  saveTokens,
+} from './tokenStorage.mjs'
 
 export async function fetchApi(url, options = {}) {
   try {
@@ -15,22 +20,19 @@ export async function fetchApi(url, options = {}) {
 }
 
 export function salvarTokens(access, refresh) {
-  localStorage.setItem(ACCESS_KEY, access)
-  localStorage.setItem(REFRESH_KEY, refresh)
+  saveTokens(localStorage, access, refresh)
 }
 
 export function limparTokens() {
-  localStorage.removeItem(ACCESS_KEY)
-  localStorage.removeItem(REFRESH_KEY)
-  localStorage.removeItem('diagpro_username')
+  clearSession(localStorage)
 }
 
 export function getRefreshToken() {
-  return localStorage.getItem(REFRESH_KEY)
+  return readRefreshToken(localStorage)
 }
 
 export function getAccessToken() {
-  return localStorage.getItem(ACCESS_KEY)
+  return readAccessToken(localStorage)
 }
 
 export async function renovarSessao() {

@@ -232,6 +232,9 @@ DIAGPRO_THROTTLE_RATES = {
     'checkout': env_rate('DJANGO_THROTTLE_CHECKOUT_RATE', '10/min'),
     'webhook': env_rate('DJANGO_THROTTLE_WEBHOOK_RATE', '300/min'),
     'health': env_rate('DJANGO_THROTTLE_HEALTH_RATE', '120/min'),
+    'google_oauth_start': env_rate('DJANGO_THROTTLE_GOOGLE_OAUTH_START_RATE', '20/min'),
+    'google_oauth_callback': env_rate('DJANGO_THROTTLE_GOOGLE_OAUTH_CALLBACK_RATE', '60/min'),
+    'google_oauth_complete': env_rate('DJANGO_THROTTLE_GOOGLE_OAUTH_COMPLETE_RATE', '120/min'),
 }
 DIAGPRO_THROTTLE_CACHE_ALIAS = 'throttle'
 DIAGPRO_NUM_PROXIES = env_nonnegative_int('DJANGO_NUM_PROXIES')
@@ -266,6 +269,29 @@ CACHES = {
         }
     ),
 }
+
+DIAGPRO_OAUTH_CACHE_ALIAS = DIAGPRO_THROTTLE_CACHE_ALIAS
+GOOGLE_CLIENT_ID = os.environ.get('GOOGLE_CLIENT_ID', '').strip()
+GOOGLE_CLIENT_SECRET = os.environ.get('GOOGLE_CLIENT_SECRET', '').strip()
+GOOGLE_OAUTH_REDIRECT_URI = os.environ.get('GOOGLE_OAUTH_REDIRECT_URI', '').strip()
+GOOGLE_OAUTH_FLOW_TTL_SECONDS = int(os.environ.get('GOOGLE_OAUTH_FLOW_TTL_SECONDS', '300'))
+if not 60 <= GOOGLE_OAUTH_FLOW_TTL_SECONDS <= 900:
+    raise ImproperlyConfigured('GOOGLE_OAUTH_FLOW_TTL_SECONDS deve estar entre 60 e 900 segundos.')
+if GOOGLE_OAUTH_REDIRECT_URI:
+    try:
+        _google_redirect = __import__('urllib.parse', fromlist=['urlparse']).urlparse(GOOGLE_OAUTH_REDIRECT_URI)
+    except ValueError:
+        raise ImproperlyConfigured('GOOGLE_OAUTH_REDIRECT_URI inválida.') from None
+    _google_redirect_is_loopback = _google_redirect.hostname in {'127.0.0.1', 'localhost'}
+    if (
+        _google_redirect.username or _google_redirect.password
+        or _google_redirect.query or _google_redirect.fragment
+        or not _google_redirect.netloc
+        or _google_redirect.path != '/api/auth/google/callback/'
+        or _google_redirect.scheme not in {'http', 'https'}
+        or (_google_redirect.scheme != 'https' and not (DEBUG and _google_redirect_is_loopback))
+    ):
+        raise ImproperlyConfigured('GOOGLE_OAUTH_REDIRECT_URI deve ser o callback HTTPS exato do backend.')
 
 REST_FRAMEWORK = {
     'DEFAULT_AUTHENTICATION_CLASSES': (

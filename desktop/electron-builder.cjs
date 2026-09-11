@@ -6,7 +6,7 @@ module.exports = {
   npmRebuild: false,
   files: [
     'main.js', 'preload.js', 'rendererTarget.js', 'electronPolicy.js',
-    'productionLogger.js', 'deviceDetector.js', 'package.json',
+    'productionLogger.js', 'deviceDetector.js', 'package.json', 'googleAuth.js',
     'dist/**/*', 'adb/**/*.js', 'security/**/*.js', 'remediation/**/*.js', 'payments/**/*.js',
     '!**/*.test.*', '!**/fixtures/**', '!**/.env*', '!**/*.log', '!**/.git/**',
   ],

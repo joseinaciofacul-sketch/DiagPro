@@ -7,6 +7,7 @@ const { isTrustedRendererUrl } = require('./electronPolicy')
 const { isMercadoPagoCheckoutUrl } = require('./payments/checkout')
 const { createProductionLogger } = require('./productionLogger')
 const { rendererTarget } = require('./rendererTarget')
+const { runGoogleDesktopAuth } = require('./googleAuth')
 const {
   verificarEstado,
   cancelarRemediacao,
@@ -26,6 +27,7 @@ let rendererTargetInfo = null
 let productionLogger = null
 const scanCoordinator = createScanCoordinator()
 const forceLocalBuild = process.argv.includes('--local-build')
+let googleAuthController = null
 
 function logOperationalError(event, details = {}) {
   productionLogger?.error(event, details)
@@ -173,6 +175,42 @@ trustedIpcHandler('create-scan-id', () => crypto.randomUUID())
 
 trustedIpcHandler('client-event', (_event, payload = {}) => {
   if (payload?.event === 'api_unavailable') logOperationalError('api_unavailable', { code: 'NETWORK_ERROR' })
+})
+
+trustedIpcHandler('google-auth-start', async (_event, { apiBaseUrl } = {}) => {
+  if (googleAuthController) {
+    return { ok: false, code: 'google_auth_in_progress', message: 'Um login com Google já está em andamento.' }
+  }
+  googleAuthController = new AbortController()
+  try {
+    const session = await runGoogleDesktopAuth({
+      apiBaseUrl,
+      openExternal: (url) => shell.openExternal(url),
+      signal: googleAuthController.signal,
+    })
+    return { ok: true, access: session.access, refresh: session.refresh, username: session.username }
+  } catch (error) {
+    const allowedCodes = new Set([
+      'account_link_required', 'account_not_authorized', 'backend_unavailable',
+      'auth_temporarily_unavailable', 'email_not_verified', 'flow_already_used',
+      'flow_expired', 'google_auth_in_progress', 'google_not_configured',
+      'google_unavailable', 'invalid_authorization_url', 'invalid_backend_response',
+      'invalid_google_token', 'invalid_nonce', 'invalid_request', 'login_canceled',
+    ])
+    return {
+      ok: false,
+      code: allowedCodes.has(error?.code) ? error.code : 'google_auth_failed',
+      message: 'Não foi possível concluir o login com Google.',
+    }
+  } finally {
+    googleAuthController = null
+  }
+})
+
+trustedIpcHandler('google-auth-cancel', () => {
+  if (!googleAuthController) return { ok: false, code: 'google_auth_not_running' }
+  googleAuthController.abort()
+  return { ok: true }
 })
 
 trustedIpcHandler('check-adb', async () => {

@@ -2,13 +2,14 @@ import assert from 'node:assert/strict'
 import test from 'node:test'
 
 import {
-  DEFAULT_DEVELOPMENT_API_BASE_URL,
+  DEFAULT_API_BASE_URL,
   joinApiUrl,
   normalizeApiBaseUrl,
 } from './apiBase.mjs'
 
-test('API usa loopback somente como padrão de desenvolvimento', () => {
-  assert.equal(normalizeApiBaseUrl(), DEFAULT_DEVELOPMENT_API_BASE_URL)
+test('API usa o backend online como padrão do desktop', () => {
+  assert.equal(normalizeApiBaseUrl(), DEFAULT_API_BASE_URL)
+  assert.equal(DEFAULT_API_BASE_URL, 'https://diagpro-api.onrender.com')
 })
 
 test('API aceita HTTPS e preserva prefixo de implantação', () => {

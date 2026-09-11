@@ -1,6 +1,6 @@
-export const DEFAULT_DEVELOPMENT_API_BASE_URL = 'http://127.0.0.1:8000'
+export const DEFAULT_API_BASE_URL = 'https://diagpro-api.onrender.com'
 
-export function normalizeApiBaseUrl(value, fallback = DEFAULT_DEVELOPMENT_API_BASE_URL) {
+export function normalizeApiBaseUrl(value, fallback = DEFAULT_API_BASE_URL) {
   const candidate = String(value || fallback).trim()
   let parsed
 
